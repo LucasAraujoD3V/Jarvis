@@ -1,3 +1,20 @@
+# segredos — credenciais ficam no Cofre.md (raiz da pasta Data), nunca aqui
+.env
+Cofre.md
+Senhas.md
+
+# estado local
+preferencias.json
+preferencias.tmp
+logs/
+assets/jarvis.ico
+
+__pycache__/
+*.pyc
+*.mp3
+*.wav
+
+# --- modelo padrão do GitHub (Node), criado junto com o repositório ---
 # Logs
 logs
 *.log

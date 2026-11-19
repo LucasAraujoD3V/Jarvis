@@ -1,0 +1,69 @@
+{
+  "nome": "Jarvis",
+  "palavras_chave": ["jarvis", "jarbas", "jarvas", "jervis", "javis", "jarvi", "jarves", "harvis", "garvis"],
+  "semelhanca_minima": 0.75,
+  "idioma": "pt-BR",
+  "saudacao": "Jarvis online. Pronto quando precisar.",
+  "respostas_ativacao": ["Sim?", "Pois não?", "Estou ouvindo."],
+  "iniciar_com_windows": true,
+
+  "voz": {
+    "nome": "pt-BR-AntonioNeural",
+    "velocidade": "+8%",
+    "tom": "-4Hz",
+    "volume": "+0%"
+  },
+
+  "microfone": {
+    "dispositivo": null,
+    "limiar_minimo": 180,
+    "fator_ruido": 2.6,
+    "silencio_fim_s": 0.9,
+    "max_frase_s": 15,
+    "fala_minima_s": 0.3
+  },
+
+  "conversa": {
+    "janela_seguimento_s": 8,
+    "max_caracteres_fala": 600,
+    "historico_turnos": 10,
+    "nova_conversa_apos_min": 15,
+    "previa_quando_demora": true
+  },
+
+  "motor_padrao": "auto",
+
+  "estilo_resposta": [
+    "Use frases curtas, de 3 a 6 palavras.",
+    "Sem enrolação, introdução ou cumprimentos.",
+    "Execute as ferramentas primeiro, mostre o resultado, depois pare. Não narre.",
+    "Remova artigos (\"Eu corrigir código\" em vez de \"Eu vou corrigir o código\")."
+  ],
+
+  "nemotron": {
+    "url": "https://integrate.api.nvidia.com/v1",
+    "modelo": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "raciocinio": false,
+    "temperatura": 0.5,
+    "max_tokens": 700,
+    "timeout_s": 30
+  },
+
+  "claude": {
+    "modelo": "sonnet",
+    "permissao": "auto",
+    "pasta_trabalho": "..",
+    "usar_mcp": false,
+    "timeout_s": 300
+  },
+
+  "motores_extras": {
+    "codex": { "ativo": false, "rotulo": "Codex", "comando": ["codex", "exec", "{prompt}"], "timeout_s": 300 },
+    "gemini": { "ativo": false, "rotulo": "Gemini", "comando": ["gemini", "-p", "{prompt}"], "timeout_s": 300 }
+  },
+
+  "interface": {
+    "popup": true,
+    "esconder_apos_s": 2.5
+  }
+}
