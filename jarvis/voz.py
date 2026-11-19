@@ -59,6 +59,7 @@ class Ouvinte:
         self.limiar = self.limiar_minimo
         self.piso = 0.0
         self.nome_microfone = ""
+        self.sem_sinal = False
         self.ouvindo_frase = False
         self._mudo_ate = 0.0
         self._mudo = False
@@ -133,6 +134,8 @@ class Ouvinte:
         blocos: list[np.ndarray] = []
         voz_s = silencio_s = 0.0
         contador = 0
+        pico_janela = 0.0  # vigia de microfone mudo: maior volume nos últimos ~10 s
+        self.sem_sinal = False
         while self._ativo.is_set():
             try:
                 bloco = self._audio.get(timeout=0.5)
@@ -143,6 +146,16 @@ class Ouvinte:
             v = rms(bloco)
             historico.append(v)
             contador += 1
+            pico_janela = max(pico_janela, v)
+            if contador % int(10 / BLOCO_S) == 0:
+                mudo_agora = pico_janela < 3.0  # silêncio digital: nada plugado, mudo no Windows ou microfone virtual parado
+                if mudo_agora != self.sem_sinal:
+                    self.sem_sinal = mudo_agora
+                    self.ao_aviso(
+                        f"Microfone sem sinal ({self.nome_microfone}): desconectado ou mudo. Conecte/ative um microfone "
+                        "e clique em Reiniciar, ou escolha outro em config.json → microfone.dispositivo (ex.: \"Camo\")."
+                        if mudo_agora else "Microfone voltou a captar som.")
+                pico_janela = 0.0
             if contador % 10 == 0 and len(historico) > 20:
                 self.piso = float(np.percentile(np.fromiter(historico, dtype=np.float32), 20))
                 self.limiar = max(self.limiar_minimo, self.piso * self.fator)

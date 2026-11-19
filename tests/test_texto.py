@@ -25,6 +25,7 @@ class TestAtivacao(unittest.TestCase):
 
     def test_nome_no_fim(self):
         self.assertEqual(extrair_comando("que horas são, Jarvis?", CHAVES), (True, "que horas são"))
+        self.assertEqual(extrair_comando("Que horas são o Jarvis", CHAVES), (True, "Que horas são"))  # transcrição real
 
     def test_so_o_nome(self):
         self.assertEqual(extrair_comando("Jarvis", CHAVES), (True, ""))

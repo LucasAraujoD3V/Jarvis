@@ -54,7 +54,10 @@ def extrair_comando(texto: str, chaves: list[str], limiar: float = 0.75) -> tupl
             continue
         if any(parece(n, c, limiar) for c in chaves_n):
             depois = " ".join(orig[i + 1:]).strip(" ,.;:!?-")
-            antes = " ".join(orig[:i]).strip(" ,.;:!?-")
+            antes_toks = list(orig[:i])
+            while antes_toks and normalizar_token(antes_toks[-1]) in VOCATIVOS:  # "que horas são, ô Jarvis"
+                antes_toks.pop()
+            antes = " ".join(antes_toks).strip(" ,.;:!?-")
             if depois:
                 return True, depois
             if antes and " ".join(palavras(antes)) not in VOCATIVOS:
