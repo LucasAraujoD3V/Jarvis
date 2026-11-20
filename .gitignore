@@ -3,9 +3,12 @@
 Cofre.md
 Senhas.md
 
-# estado local
+# estado local (memória e conversa são PESSOAIS: nunca vão para o git)
 preferencias.json
-preferencias.tmp
+memoria.json
+memoria.bak.json
+conversa.json
+*.tmp
 logs/
 assets/jarvis.ico
 

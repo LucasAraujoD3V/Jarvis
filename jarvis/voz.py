@@ -233,6 +233,10 @@ class Ouvinte:
         # entrada vazia solta estalos isolados que enganavam o vigia ("sem sinal" / "voltou" a cada minuto).
         janela = collections.deque(maxlen=int(10 / BLOCO_S))
         quietas = 0
+        # calibração: a cada minuto, se houve som bem acima do ruído mas NENHUMA frase foi captada, registra o pico
+        # ("Som sem frase") — é a fala que o limiar deixou passar; serve para ajustar microfone.limiar_minimo
+        minuto: list[float] = []
+        frases_minuto = 0
         ultimo_bloco = time.monotonic()
         self.sem_sinal = False
         while self._ativo.is_set():
@@ -264,6 +268,16 @@ class Ouvinte:
                 self.piso = float(np.percentile(np.fromiter(historico, dtype=np.float32), 20))
                 self.limiar = max(self.limiar_minimo, self.piso * self.fator)
             self.ao_nivel(max(0.0, min(1.0, (v - self.piso) / (self.limiar * 3))))
+            if not self.mudo:
+                minuto.append(v)
+            if contador % int(60 / BLOCO_S) == 0:
+                if minuto and frases_minuto == 0:
+                    a = np.fromiter(minuto, dtype=np.float32)
+                    pico, p99 = float(a.max()), float(np.percentile(a, 99))
+                    if p99 >= max(self.piso * 6, 12):
+                        log.info("Som sem frase (1 min): pico %.0f, p99 %.0f, piso %.1f, limiar %.0f", pico, p99, self.piso, self.limiar)
+                minuto = []
+                frases_minuto = 0
 
             if self.mudo:
                 gravando = False
@@ -294,6 +308,7 @@ class Ouvinte:
             dur = len(blocos) * BLOCO_S
             if silencio_s >= self.silencio_fim or dur >= self.max_frase:
                 if voz_s >= self.fala_minima:
+                    frases_minuto += 1
                     audio = np.concatenate(blocos)
                     # registra o volume das frases: base para calibrar limiar_minimo no microfone real
                     log.info("Frase captada: %.1f s, voz %.1f s, volume pico %.0f (limiar %.0f)",

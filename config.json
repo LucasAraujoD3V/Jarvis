@@ -27,7 +27,7 @@
     "janela_seguimento_s": 8,
     "max_caracteres_fala": 600,
     "historico_turnos": 10,
-    "nova_conversa_apos_min": 15,
+    "nova_conversa_apos_min": 720,
     "previa_quando_demora": true
   },
 
@@ -57,9 +57,34 @@
     "timeout_s": 300
   },
 
+  "nvidia_pro": {
+    "ativo": true,
+    "rotulo": "Kimi",
+    "apelidos": ["kimi"],
+    "modelo": "moonshotai/kimi-k3.1-pro",
+    "raciocinio": null,
+    "temperatura": 0.4,
+    "max_tokens": 900,
+    "timeout_s": 45,
+    "lento": true
+  },
+
   "motores_extras": {
-    "codex": { "ativo": false, "rotulo": "Codex", "comando": ["codex", "exec", "{prompt}"], "timeout_s": 300 },
-    "gemini": { "ativo": false, "rotulo": "Gemini", "comando": ["gemini", "-p", "{prompt}"], "timeout_s": 300 }
+    "gemini": {
+      "ativo": true, "rotulo": "Gemini", "apelidos": ["gemini", "jemini", "gemine"],
+      "comando": ["gemini", "-o", "json", "-p", " "], "saida_json": "response", "timeout_s": 120
+    },
+    "codex": {
+      "ativo": true, "rotulo": "Codex", "apelidos": ["codex", "codecs", "chatgpt", "gpt"],
+      "comando": ["codex", "exec", "--skip-git-repo-check", "-c", "model_reasoning_effort=low", "-"], "timeout_s": 180
+    }
+  },
+
+  "roteamento": {
+    "rapido": ["nemotron", "gemini", "claude"],
+    "inteligente": ["nvidia_pro", "gemini", "claude", "nemotron"],
+    "internet": ["gemini", "claude"],
+    "pc": ["claude", "codex", "gemini"]
   },
 
   "interface": {

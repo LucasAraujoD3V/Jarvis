@@ -9,7 +9,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from jarvis.texto import (  # noqa: E402
-    comando_local, dividir_frases, escolher_motor, extrair_comando, limpar_para_fala, parece_acao,
+    categoria, comando_local, dividir_frases, escolher_motor, extrair_comando, limpar_para_fala, parece_acao,
+    pedido_de_motor, rotear,
 )
 
 CHAVES = ["jarvis", "jarbas", "javis"]
@@ -87,6 +88,55 @@ class TestRoteamento(unittest.TestCase):
     def test_parece_acao(self):
         self.assertFalse(parece_acao("qual a capital da Austrália"))
         self.assertTrue(parece_acao("roda os testes no PC"))
+
+
+TUDO = {"claude", "nemotron", "nvidia_pro", "gemini", "codex"}
+EXTRAS = ["nvidia_pro", "gemini", "codex"]
+
+
+class TestRoteamentoNovo(unittest.TestCase):
+    """Papo → rápido; difícil → o mais inteligente; internet → Gemini; PC → Claude."""
+
+    def fila(self, texto, disp=TUDO, **kw):
+        return rotear(texto, "auto", disp, EXTRAS, **kw)
+
+    def test_categorias(self):
+        self.assertEqual(categoria("agora sim hein"), "rapido")
+        self.assertEqual(categoria("qual a capital do Japão"), "rapido")
+        self.assertEqual(categoria("compara Python e Rust para um site de vendas"), "inteligente")
+        self.assertEqual(categoria("pensa bem: qual a melhor estratégia pra quitar duas dívidas"), "inteligente")
+        self.assertEqual(categoria("como está o tempo hoje"), "internet")
+        self.assertEqual(categoria("pesquisa o preço do bitcoin"), "internet")
+        self.assertEqual(categoria("abre o projeto Mesa Traders"), "pc")
+        self.assertEqual(categoria("cria um arquivo de notas"), "pc")
+
+    def test_filas(self):
+        self.assertEqual(self.fila("agora sim hein")[0][0], "nemotron")
+        self.assertEqual(self.fila("compara Python e Rust")[0][0], "nvidia_pro")
+        self.assertEqual(self.fila("como está o tempo hoje")[0][0], "gemini")
+        self.assertEqual(self.fila("abre o projeto Kairos")[0][0], "claude")
+
+    def test_fila_tem_reserva_sem_repetir(self):
+        fila = self.fila("agora sim hein")[0]
+        self.assertEqual(len(fila), len(set(fila)))
+        self.assertEqual(set(fila), TUDO)
+
+    def test_sem_chave_nvidia_papo_cai_no_gemini(self):
+        self.assertEqual(self.fila("agora sim hein", {"claude", "gemini", "codex"})[0][0], "gemini")
+
+    def test_apelidos(self):
+        fila, texto, _ = rotear("pergunta pro Kimi quanto é 17 vezes 23", "auto", TUDO, EXTRAS, apelidos={"kimi": "nvidia_pro"})
+        self.assertEqual((fila[0], texto), ("nvidia_pro", "quanto é 17 vezes 23"))
+        fila, texto, _ = rotear("Gemini, qual a previsão pra amanhã", "auto", TUDO, EXTRAS)
+        self.assertEqual((fila[0], texto), ("gemini", "qual a previsão pra amanhã"))
+
+    def test_rotas_do_config(self):
+        self.assertEqual(self.fila("agora sim hein", rotas={"rapido": ["gemini"]})[0][0], "gemini")
+
+    def test_troca_de_motor_falada(self):
+        self.assertEqual(pedido_de_motor("usa o Gemini"), "gemini")
+        self.assertEqual(pedido_de_motor("troca pro Kimi, por favor"), "kimi")
+        self.assertIsNone(pedido_de_motor("usa o Claude para criar um site"))
 
 
 class TestFala(unittest.TestCase):

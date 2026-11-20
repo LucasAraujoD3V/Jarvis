@@ -23,10 +23,15 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
-from .config import caminho, ler_env
-from .motores import Cancelado, ErroMotor, MotorClaude, MotorCLI, MotorNemotron, SINAL_ENCAMINHAR
-from .texto import comando_local, escolher_motor, extrair_comando, limpar_para_fala
+from .config import RAIZ, caminho, ler_env
+from .memoria import Conversa, Memoria
+from .motores import (Cancelado, ErroMotor, MotorClaude, MotorCLI, MotorNemotron, SINAL_ENCAMINHAR, SINAL_IGNORAR,
+                      nota_seguimento)
+from .texto import (ROTAS_PADRAO, comando_local, comando_memoria, extrair_comando, limpar_para_fala,
+                    normalizar_token, pedido_de_motor, rotear)
 from .voz import Falante, Ouvinte
+
+MOTORES_COM_FERRAMENTAS = ("claude", "gemini", "codex")  # para onde vai o que o modelo sem internet ENCAMINHAR
 
 log = logging.getLogger("jarvis.assistente")
 
@@ -69,18 +74,43 @@ class Assistente(QObject):
         conv = cfg.get("conversa", {})
         self.janela_s = float(conv.get("janela_seguimento_s", 8))
         self.max_fala = int(conv.get("max_caracteres_fala", 600))
-        self.reset_s = float(conv.get("nova_conversa_apos_min", 15)) * 60
+        self.reset_s = float(conv.get("nova_conversa_apos_min", 720)) * 60  # 0 = nunca
         self.previa = bool(conv.get("previa_quando_demora", True))
+        turnos = int(conv.get("historico_turnos", 10))
         estilo = list(cfg.get("estilo_resposta") or [])
         pasta = caminho(cfg.get("claude", {}).get("pasta_trabalho", ".."))
 
+        # memória (fatos ensinados) e conversa (últimas trocas): em disco, valem para todas as IAs
+        self.memoria = Memoria(RAIZ / "memoria.json")
+        self.conversa = Conversa(RAIZ / "conversa.json", max_turnos=turnos, expira_s=self.reset_s)
+
         env = ler_env()
-        self.motores = {
-            "nemotron": MotorNemotron(cfg, env.get("NVIDIA_API_KEY", ""), self.nome, estilo, int(conv.get("historico_turnos", 10))),
-            "claude": MotorClaude(cfg, pasta, self.nome, estilo),
-        }
+        chave = env.get("NVIDIA_API_KEY", "")
+        self.motores = {"nemotron": MotorNemotron(cfg, chave, self.nome, estilo, turnos)}
+        if cfg.get("nvidia_pro"):
+            self.motores["nvidia_pro"] = MotorNemotron(cfg, chave, self.nome, estilo, turnos, nome="nvidia_pro")
+        self.motores["claude"] = MotorClaude(cfg, pasta, self.nome, estilo)
         for nome, c in (cfg.get("motores_extras") or {}).items():
-            self.motores[nome] = MotorCLI(nome, c, pasta)
+            self.motores[nome] = MotorCLI(nome, c, pasta, self.nome, estilo)
+        for m in self.motores.values():
+            m.memoria = self.memoria
+            m.conversa = self.conversa
+        self.rotas = cfg.get("roteamento") or {}
+        # nomes falados → motor ("pergunta pro Kimi", "usa o Gemini")
+        self.apelidos: dict[str, str] = {}
+        for nome, m in self.motores.items():
+            secao = (cfg.get("motores_extras") or {}).get(nome) or cfg.get(nome) or {}
+            for falado in [nome, m.rotulo, *(secao.get("apelidos") or [])]:
+                n = normalizar_token(falado)
+                if n and n not in ("nvidiapro",):
+                    self.apelidos.setdefault(n, nome)
+
+        # continuidade: a sessão do Claude sobrevive ao reinício (preferencias.json → claude_sessao)
+        if self.conversa.expirou():
+            log.info("Conversa salva expirou (sem uso há mais de %.0f min): começando uma nova", self.reset_s / 60)
+            self.conversa.limpar()
+            prefs.set("claude_sessao", None)
+        self.motores["claude"].sessao = prefs.get("claude_sessao") or None
 
         self.modo = prefs.get("motor") or cfg.get("motor_padrao", "auto")
         self.ouvinte = Ouvinte(cfg.get("microfone", {}), cfg.get("idioma", "pt-BR"), self._ao_texto, self._nivel_mic, self._avisar,
@@ -157,10 +187,14 @@ class Assistente(QObject):
         self._esvaziar_fila()
         self._cancelar.set()
 
-    def nova_conversa(self) -> None:
+    def nova_conversa(self, avisar: bool = True) -> None:
+        """Esquece a CONVERSA (não a memória de fatos ensinados)."""
         for m in self.motores.values():
             m.nova_conversa()
-        self._avisar("Conversa nova: histórico esquecido.")
+        self.conversa.limpar()
+        self.prefs.set("claude_sessao", None)
+        if avisar:
+            self._avisar("Conversa nova: histórico esquecido (a memória do que você ensinou continua).")
 
     def definir_motor(self, modo: str) -> None:
         if modo != "auto" and modo not in self.motores:
@@ -174,7 +208,10 @@ class Assistente(QObject):
         return "Automático" if modo == "auto" else self.motores[modo].rotulo if modo in self.motores else modo
 
     def recarregar_chave_nemotron(self) -> None:
-        self.motores["nemotron"].chave = ler_env().get("NVIDIA_API_KEY", "")
+        chave = ler_env().get("NVIDIA_API_KEY", "")
+        for m in self.motores.values():
+            if isinstance(m, MotorNemotron):
+                m.chave = chave
         ok = self.motores["nemotron"].disponivel
         self._avisar("Chave do Nemotron carregada." if ok else "Nemotron continua sem chave.")
 
@@ -242,6 +279,7 @@ class Assistente(QObject):
 
     def _abrir_janela(self) -> None:
         self._janela_ate = time.monotonic() + self.janela_s
+        log.info("Janela de seguimento aberta (%.0f s)", self.janela_s)
 
     def _ao_texto(self, texto: str) -> None:
         """Frase transcrita do microfone (thread de transcrição)."""
@@ -258,14 +296,29 @@ class Assistente(QObject):
             self.legenda.emit("voce", texto)
             self.dizer(random.choice(self.cfg.get("respostas_ativacao") or ["Sim?"]), abrir_janela=True)
             return
-        self._tratar_comando(resto if achou else texto)
+        # sem o nome = veio na janela de seguimento: pode ser comentário ou conversa com outra pessoa
+        self._tratar_comando(resto if achou else texto, seguimento=not achou)
 
-    def _tratar_comando(self, cmd: str) -> None:
+    def _motor_falado(self, falado: str | None) -> str | None:
+        if not falado:
+            return None
+        if falado in ("automatico", "auto"):
+            return "auto"
+        return self.apelidos.get(normalizar_token(falado))
+
+    def _tratar_comando(self, cmd: str, seguimento: bool = False) -> None:
         self._ultimo_uso_check()
         local = comando_local(cmd)
+        if local is None:
+            m = self._motor_falado(pedido_de_motor(cmd))
+            if m:
+                local = f"motor:{m}"
+        memoria = None if local else comando_memoria(cmd)
         self.legenda.emit("voce", cmd)
         self.registro.emit("voce", cmd, "")
-        if local == "cancelar":
+        if memoria:
+            self._fila.put(("memoria", cmd, memoria))
+        elif local == "cancelar":
             self.parar()
             self._janela_ate = 0
             self.dizer("Ok.")
@@ -292,15 +345,47 @@ class Assistente(QObject):
             self._fila.put(("falar", "Reiniciando.", False))
             self._fila.put(("reiniciar",))
         else:
-            self._fila.put(("perguntar", cmd))
+            self._fila.put(("perguntar", cmd, seguimento))
 
     def _ultimo_uso_check(self) -> None:
-        agora = time.monotonic()
-        if agora - self._ultimo_uso > self.reset_s:
-            for m in self.motores.values():
-                m.nova_conversa()
-            log.info("Conversa antiga expirou: começando uma nova")
-        self._ultimo_uso = agora
+        if self.conversa.expirou():
+            self.nova_conversa(avisar=False)
+            log.info("Conversa antiga expirou (sem uso há mais de %.0f min): começando uma nova", self.reset_s / 60)
+        self._ultimo_uso = time.monotonic()
+
+    # ================================================================= memória ("lembra que…", "esquece…")
+    def _memoria(self, cmd: str, pedido: tuple[str, str]) -> None:
+        acao, arg = pedido
+        if acao == "lembrar":
+            novo = self.memoria.lembrar(arg)
+            log.info("Memória: %s %s", "aprendeu" if novo else "já sabia", arg)
+            resposta = random.choice(["Anotado.", "Guardado.", "Pode deixar, anotado."]) if novo else "Isso eu já sabia."
+        elif acao == "esquecer":
+            apagados = self.memoria.esquecer(arg)
+            log.info("Memória: esqueceu %s (pedido: %s)", apagados, arg)
+            resposta = "Esquecido." if apagados else "Não achei isso na memória."
+            if apagados:
+                self.registro.emit("status", "Esqueci: " + " | ".join(apagados), "memória")
+        elif acao == "esquecer_tudo":
+            n = self.memoria.esquecer_tudo()
+            log.info("Memória: apagou tudo (%d fatos; cópia em memoria.bak.json)", n)
+            resposta = f"Memória apagada. Esqueci {n} {'coisa' if n == 1 else 'coisas'}." if n else "A memória já estava vazia."
+        else:  # listar
+            fatos = self.memoria.listar()
+            if not fatos:
+                resposta = "Ainda não sei nada sobre você. Diga: Jarvis, lembra que..."
+            elif self.motores_disponiveis():
+                # uma IA rápida conta em 2ª pessoa (a memória já vai no prompt dela)
+                self.registro.emit("status", f"Memória ({len(fatos)}): " + " | ".join(fatos), "memória")
+                self._perguntar(cmd + "\n\n(Responda com base só no que está em 'O que você sabe do usuário', falando "
+                                "com ele em segunda pessoa, curto. Se forem muitas coisas, diga as principais.)",
+                                forcar_categoria="rapido", pedido_original=cmd)
+                return
+            else:
+                resposta = "Sei isto: " + " ".join(fatos)
+        self.registro.emit("jarvis", resposta, "memória")
+        self.conversa.adicionar(cmd, resposta, "memoria")
+        self._falar(resposta, abrir_janela=True)
 
     # ================================================================= cérebro (uma coisa por vez)
     def _esvaziar_fila(self) -> None:
@@ -335,7 +420,9 @@ class Assistente(QObject):
                 if tipo == "falar":
                     self._falar(item[1], abrir_janela=item[2])
                 elif tipo == "perguntar":
-                    self._perguntar(item[1])
+                    self._perguntar(item[1], seguimento=item[2] if len(item) > 2 else False)
+                elif tipo == "memoria":
+                    self._memoria(item[1], item[2])
                 elif tipo == "desligar":
                     self.desligar()
                 elif tipo == "reiniciar":
@@ -365,37 +452,57 @@ class Assistente(QObject):
         if not self._cancelar.is_set():
             self._definir_estado("pensando")
 
-    def _perguntar(self, cmd: str) -> None:
+    def _perguntar(self, cmd: str, seguimento: bool = False, forcar_categoria: str | None = None,
+                   pedido_original: str | None = None) -> None:
         disp = self.motores_disponiveis()
         extras = [n for n in self.motores if n not in ("claude", "nemotron")]
-        nome, texto = escolher_motor(cmd, self.modo, disp, extras)
-        if nome is None:
+        fila, texto, cat = rotear(cmd, self.modo, disp, extras, self.rotas, self.apelidos)
+        if forcar_categoria and self.modo == "auto":
+            preferidos = [n for n in {**ROTAS_PADRAO, **self.rotas}.get(forcar_categoria, []) if n in disp]
+            fila = preferidos + [n for n in fila if n not in preferidos]
+            cat = forcar_categoria
+        if not fila:
             self._falar("Nenhuma IA disponível. Veja o painel.", abrir_janela=False)
             self._avisar("Nenhuma IA disponível: configure a chave do Nemotron ou instale/logue o Claude Code.")
             return
-        resposta, motor, ms = self._consultar(nome, texto, disp)
+        log.info("Pedido (%s%s) → %s", cat, ", seguimento" if seguimento else "", " > ".join(fila))
+        envio = texto + (nota_seguimento(self.nome) if seguimento else "")
+        # papo rápido não ganha "Um momento." antes: a prévia é só para o que demora de verdade
+        previa = previa_para(texto) if (self.previa and cat != "rapido") else ""
+        resposta, motor, ms = self._consultar(fila, envio, disp, previa)
         if resposta is None:
+            return
+        if resposta.strip().upper().startswith(SINAL_IGNORAR):
+            log.info("Ignorado (%s achou que não era para mim): %s", motor.rotulo, texto)
+            self.registro.emit("status", "Não era comigo: fiquei quieto", motor.rotulo)
+            self._janela_ate = 0
             return
         log.info("Resposta %s (%.1f s): %s", motor.rotulo, ms / 1000, resposta[:300].replace("\n", " "))
         self.registro.emit("jarvis", resposta, f"{motor.rotulo} · {ms / 1000:.1f} s")
+        self.conversa.adicionar(pedido_original or texto, resposta, motor.nome)
+        if motor.nome == "claude":
+            self.prefs.set("claude_sessao", motor.sessao)
         fala, cortado = limpar_para_fala(resposta, self.max_fala)
         if cortado:
             fala += " O resto está no painel."
         self._falar(fala or "Feito.", abrir_janela=True)
 
-    def _consultar(self, nome: str, texto: str, disp: set[str]):
-        """Pergunta ao motor escolhido; se ele falhar, tenta o outro. Devolve (resposta, motor, ms) ou (None, ...)."""
-        tentativas = [nome] + [n for n in ("nemotron", "claude") if n != nome and n in disp]
-        nem = self.motores["nemotron"]
-        nem.encaminhar = self.modo == "auto" and "claude" in disp
+    def _consultar(self, fila: list[str], texto: str, disp: set[str], previa: str = ""):
+        """Pergunta ao 1º motor da fila; se ele falhar, tenta o próximo. Devolve (resposta, motor, ms) ou (None, ...)."""
+        tentativas = list(fila)
+        com_ferramentas = [n for n in MOTORES_COM_FERRAMENTAS if n in disp]
+        for m in self.motores.values():
+            if isinstance(m, MotorNemotron):
+                m.encaminhar = self.modo == "auto" and bool(com_ferramentas)
         ultimo_erro = ""
         for i, n in enumerate(tentativas):
             motor = self.motores[n]
             self._definir_estado("pensando")
             self.legenda.emit("status", f"Pensando · {motor.rotulo}")
             previa_thread = None
-            if motor.lento and self.previa:
-                previa_thread = threading.Thread(target=self._falar_previa, args=(previa_para(texto),), daemon=True)
+            if motor.lento and previa:
+                previa_thread = threading.Thread(target=self._falar_previa, args=(previa,), daemon=True)
+                previa = ""  # uma prévia só, mesmo se cair para outra IA
                 previa_thread.start()
             t0 = time.monotonic()
             try:
@@ -412,11 +519,15 @@ class Assistente(QObject):
                 if previa_thread:
                     previa_thread.join()
             ms = (time.monotonic() - t0) * 1000
-            if n == "nemotron" and resposta.strip().upper().startswith(SINAL_ENCAMINHAR):
-                if "claude" in disp and "claude" not in tentativas[i + 1:]:
-                    tentativas.append("claude")
-                log.info("Nemotron encaminhou para o Claude: %s", texto)
-                self.registro.emit("status", "Nemotron encaminhou para o Claude", "")
+            if isinstance(motor, MotorNemotron) and resposta.strip().upper().startswith(SINAL_ENCAMINHAR):
+                # precisa de internet/PC: passa para a próxima IA com ferramentas (as que já estão na fila vêm antes)
+                restantes = [x for x in tentativas[i + 1:] if x in MOTORES_COM_FERRAMENTAS]
+                if not restantes:
+                    restantes = [x for x in com_ferramentas if x not in tentativas[: i + 1]]
+                tentativas[i + 1:] = restantes
+                destino = self.motores[restantes[0]].rotulo if restantes else "ninguém"
+                log.info("%s encaminhou para %s: %s", motor.rotulo, destino, texto)
+                self.registro.emit("status", f"{motor.rotulo} encaminhou para {destino}", "")
                 continue
             self._definir_estado("pensando")
             return resposta, motor, ms

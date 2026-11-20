@@ -101,21 +101,117 @@ def comando_local(texto: str) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------------------------- roteamento de IA
-# Pedidos que precisam de internet, de dados atuais ou de MEXER no computador vão para o Claude (tem ferramentas).
-# Conversa, conta, explicação e curiosidade vão para o Nemotron (responde em ~1 s).
-RADICAIS_ACAO = (
-    "abr", "cri", "arquiv", "past", "projet", "codig", "program", "script", "rod", "execut", "instal", "commit",
-    "edit", "corrig", "consert", "deploy", "servidor", "pesquis", "busc", "procur", "noticia", "cotac",
-    "planilh", "document", "email", "mand", "envi", "baix", "organiz", "apag", "delet", "renome", "mov",
-    "termin", "comand", "naveg", "site", "pagin", "vps", "git", "github", "clima", "chov", "temperatur",
-    "previs", "dolar", "bitcoin", "kairos", "mesa", "trader", "brain", "cofre", "lembr", "agend", "calendar",
+_TROCA_MOTOR = re.compile(r"^(?:usa|usar|use|modo|muda pro|muda para o|troca pro|troca para o|vai de)\s+(?:o\s+)?([a-z0-9]+)$")
+
+
+def pedido_de_motor(texto: str) -> str | None:
+    """'usa o Gemini' → 'gemini' (palavra falada; quem chama confere se é um motor). None = não é troca de motor."""
+    n = re.sub(r"\s+", " ", _CORTESIA.sub(" ", " ".join(palavras(texto)))).strip()
+    m = _TROCA_MOTOR.match(n)
+    return m.group(1) if m else None
+
+
+# --------------------------------------------------------------------------------------------- memória (ensinar)
+# "Jarvis, lembra que eu acordo às 6" / "aprende que meu carro é um Civic" / "anota aí: a senha do wifi fica no Cofre"
+_MEM_LEMBRAR = re.compile(
+    r"^\s*(?:por favor,?\s+)?(?:se\s+)?"
+    r"(?:lembr[ae]|aprend[ae]|anot[ae]|guard[ae]|grav[ae]|memoriz[ae]|registr[ae]|saiba|fica sabendo)(?:-se)?"
+    r"(?:\s+(?:a[ií]|pra mim|para mim|isso|disso|bem|sempre))*"
+    r"\s*(?:(?:de\s+)?que\s+|:\s*)(?P<fato>.+)$",
+    re.I,
 )
-FRASES_ACAO = (
-    "no meu computador", "no pc", "na internet", "na web", "hoje no mundo", "o tempo hoje", "como esta o tempo",
-    "quanto esta", "quanto ta", "le o", "leia o", "le a", "leia a", "da uma olhada", "verifica", "verifique",
+# "esquece que eu gosto de café" / "esquece o que eu falei sobre o carro" / "apaga da memória o café"
+_MEM_ESQUECER = re.compile(
+    r"^\s*(?:por favor,?\s+)?(?:"
+    r"(?:esque[cç][ae]|esquecer)(?:-se)?(?:\s+(?:a[ií]|da (?:sua )?mem[oó]ria))?"
+    r"|(?:apag[ae]|remov[ae]|tir[ae]|limp[ae])\s+da (?:sua )?mem[oó]ria"
+    r")\s+(?:(?:de\s+)?que\s+|:\s*|(?:o\s+)?que eu (?:te )?(?:disse|falei|ensinei)\s+(?:sobre|de|do|da|que)\s+)?(?P<alvo>.+)$",
+    re.I,
+)
+_MEM_ESQUECER_TUDO = {
+    "esquece tudo que voce sabe de mim", "esquece tudo que voce sabe sobre mim", "esquece tudo sobre mim",
+    "apaga a memoria", "apaga a sua memoria", "apaga toda a memoria", "apaga toda a sua memoria", "limpa a memoria",
+    "limpa a sua memoria", "zera a memoria", "zera a sua memoria", "esquece tudo que eu te ensinei",
+    "esquece tudo que te ensinei", "esquece tudo que eu te falei",
+}
+_MEM_LISTAR = (
+    re.compile(r"^(?:me\s+(?:fala|diz|conta)\s+|e\s+)?(?:o\s+)?(?:que|quais|qual)\b.*\b(?:sabe|lembra|aprendeu|guardou|anotou|"
+               r"sabes|conhece)\b.*\b(?:mim|meu respeito|minha vida|de eu)\b"),
+    re.compile(r"\b(?:o que|que)\b.*\b(?:tem|ha|esta|guardou)\b.*\bna (?:sua )?memoria\b"),
+    re.compile(r"^(?:le|lista|listar|mostra|fala)\s+(?:a\s+)?(?:sua\s+)?memoria$"),
+    re.compile(r"^(?:o que|que)\s+(?:voce\s+)?(?:aprendeu|anotou|guardou)(?:\s+ate agora)?$"),
+)
+
+
+def comando_memoria(texto: str) -> tuple[str, str] | None:
+    """
+    Pedidos para ENSINAR o Jarvis. Devolve (acao, argumento) ou None:
+      ("lembrar", fato) · ("esquecer", trecho) · ("esquecer_tudo", "") · ("listar", "")
+    "esquece isso" e "esquece tudo" (sozinhos) são comandos locais de cancelar/conversa nova, não memória.
+    """
+    t = (texto or "").strip()
+    n = " ".join(palavras(t))
+    if not n:
+        return None
+    n_sem_cortesia = re.sub(r"\s+", " ", re.sub(r"\b(por favor|ai|ja)\b", " ", n)).strip()
+    if n_sem_cortesia in _MEM_ESQUECER_TUDO:
+        return ("esquecer_tudo", "")
+    if any(r.search(n) for r in _MEM_LISTAR):
+        return ("listar", "")
+    m = _MEM_ESQUECER.match(t)
+    if m:
+        alvo = m.group("alvo").strip(" ,.;:!?")
+        if " ".join(palavras(alvo)) not in ("isso", "tudo", "", "disso"):
+            return ("esquecer", alvo)
+    m = _MEM_LEMBRAR.match(t)
+    if m:
+        fato = m.group("fato").strip(" ,;:")
+        if fato and not fato.rstrip().endswith("?") and len(palavras(fato)) >= 2:
+            return ("lembrar", fato)
+    return None
+
+
+# --------------------------------------------------------------------------------------------- roteamento de IA
+# O modo automático separa o pedido em 4 tipos e cada tipo tem uma fila de IAs (a 1ª disponível responde; se falhar,
+# tenta a próxima). As filas ficam em config.json → roteamento (ROTAS_PADRAO é o padrão):
+#   pc          mexer no computador (abrir, criar, arquivo, git, projeto...) → Claude Code (tem ferramentas de verdade)
+#   internet    pesquisa, notícia, clima, cotação → Gemini CLI (busca do Google embutida; poupa o limite do Claude)
+#   inteligente raciocínio pesado (comparar, analisar, calcular, planejar, pedido longo) → o modelo mais inteligente grátis
+#   rapido      papo, comentário, curiosidade, conta simples → o modelo mais rápido (Nemotron lightning, ~0,5 s)
+RADICAIS_PC = (
+    "abr", "cri", "arquiv", "past", "projet", "codig", "program", "script", "rod", "execut", "instal", "commit",
+    "edit", "corrig", "consert", "deploy", "servidor", "planilh", "document", "email", "mand", "envi", "baix",
+    "organiz", "apag", "delet", "renome", "mov", "termin", "comand", "vps", "git", "github", "kairos", "mesa",
+    "trader", "brain", "cofre", "lembr", "agend", "calendar", "naveg",
+)
+RADICAIS_INTERNET = (
+    "pesquis", "busc", "procur", "noticia", "cotac", "site", "pagin", "clima", "chov", "temperatur", "previs",
+    "dolar", "bitcoin", "placar",
+)
+FRASES_PC = (
+    "no meu computador", "no pc", "le o", "leia o", "le a", "leia a", "da uma olhada", "verifica", "verifique",
     "checa", "cheque", "status do", "status da", "git", "vps", "pc",
 )
+FRASES_INTERNET = (
+    "na internet", "na web", "hoje no mundo", "o tempo hoje", "como esta o tempo", "quanto esta", "quanto ta",
+    "quem ganhou", "resultado do jogo",
+)
+RADICAIS_DIFICIL = (
+    "compar", "analis", "calcul", "resolv", "demonstr", "estrateg", "planej", "otimiz", "raciocin", "deduz",
+    "equac", "integral", "derivad", "probabil", "estatist", "argument", "vantag", "desvantag", "aprofund",
+    "detalhad", "minucios", "complex", "dilema", "enigma", "charada", "logica",
+)
+FRASES_DIFICIL = (
+    "pensa bem", "pense bem", "com calma", "passo a passo", "qual a diferenca", "qual e a diferenca",
+    "pros e contras", "o que voce acha melhor", "me ajuda a decidir",
+)
+PALAVRAS_PEDIDO_LONGO = 30  # pedido falado com mais de 30 palavras costuma ser complexo
+ROTAS_PADRAO: dict[str, list[str]] = {
+    "rapido": ["nemotron", "gemini", "claude"],
+    "inteligente": ["nvidia_pro", "gemini", "claude", "nemotron"],
+    "internet": ["gemini", "claude"],
+    "pc": ["claude", "codex", "gemini"],
+}
 # radicais curtos demais casariam palavras comuns: só valem como palavra inteira começando assim e com tamanho mínimo
 _MIN_TAM_RADICAL = 4
 
@@ -145,45 +241,103 @@ def _tirar_prefixo(texto: str, prefixo: list[str]) -> str | None:
     return " ".join(orig[ultimo + 1:]).strip(" ,.;:!?-")
 
 
-def parece_acao(texto: str) -> bool:
+def _casa(texto: str, radicais: tuple[str, ...], frases: tuple[str, ...]) -> bool:
     toks = palavras(texto)
     junto = " " + " ".join(toks) + " "
-    if any(f" {f} " in junto for f in FRASES_ACAO):
+    if any(f" {f} " in junto for f in frases):
         return True
-    for t in toks:
-        if len(t) < _MIN_TAM_RADICAL:
-            continue
-        if any(t.startswith(r) for r in RADICAIS_ACAO):
-            return True
-    return False
+    return any(len(t) >= _MIN_TAM_RADICAL and t.startswith(r) for t in toks for r in radicais)
 
 
-def escolher_motor(texto: str, modo: str, disponiveis: set[str], extras: list[str] | None = None) -> tuple[str | None, str]:
+def parece_pc(texto: str) -> bool:
+    return _casa(texto, RADICAIS_PC, FRASES_PC)
+
+
+def parece_internet(texto: str) -> bool:
+    return _casa(texto, RADICAIS_INTERNET, FRASES_INTERNET)
+
+
+def parece_acao(texto: str) -> bool:
+    """Precisa de ferramenta (mexer no PC ou buscar na internet)?"""
+    return parece_pc(texto) or parece_internet(texto)
+
+
+def parece_dificil(texto: str) -> bool:
+    return len(palavras(texto)) > PALAVRAS_PEDIDO_LONGO or _casa(texto, RADICAIS_DIFICIL, FRASES_DIFICIL)
+
+
+# Substantivos que aparecem em pergunta teórica ("compara Python e Rust para um servidor web") e, sozinhos, não provam
+# que é para mexer no PC/internet. Verbos de ação ("abre", "cria", "pesquisa") e assuntos do dia ("clima") provam.
+_FRACOS = ("servidor", "program", "script", "document", "comand", "termin", "planilh", "email", "codig", "site", "pagin")
+
+
+def categoria(texto: str) -> str:
+    """pc | internet | inteligente | rapido (ver ROTAS_PADRAO)."""
+    forte_pc = _casa(texto, tuple(r for r in RADICAIS_PC if r not in _FRACOS), FRASES_PC)
+    forte_net = _casa(texto, tuple(r for r in RADICAIS_INTERNET if r not in _FRACOS), FRASES_INTERNET)
+    if forte_pc:
+        return "pc"
+    if forte_net:
+        return "internet"
+    if parece_dificil(texto):
+        return "inteligente"
+    if parece_pc(texto):
+        return "pc"
+    if parece_internet(texto):
+        return "internet"
+    return "rapido"
+
+
+def _prefixos_de(apelido: str) -> list[list[str]]:
+    a = normalizar_token(apelido)
+    return [["pergunta", "pro", a], ["pergunta", "para", "o", a], ["pergunta", "ao", a], ["pede", "pro", a], ["no", a], [a]]
+
+
+def rotear(texto: str, modo: str, disponiveis: set[str], extras: list[str] | None = None,
+           rotas: dict[str, list[str]] | None = None, apelidos: dict[str, str] | None = None) -> tuple[list[str], str, str]:
     """
-    Devolve (nome_do_motor, texto_sem_o_prefixo). Nome None = nenhuma IA disponível.
-    Ordem: 1) pedido explícito na frase ("pergunta pro Claude ..."); 2) modo fixo (claude/nemotron/...);
-    3) automático: ação/internet → Claude, resto → Nemotron; 4) o que estiver disponível.
+    Devolve (fila_de_motores, texto_sem_o_prefixo, categoria). Fila vazia = nenhuma IA disponível.
+    Ordem: 1) pedido explícito na frase ("pergunta pro Claude ...", "pergunta pro Kimi ..."); 2) modo fixo;
+    3) automático: fila da categoria (rotas); 4) o resto do que estiver disponível, como reserva.
+    `apelidos`: nome falado → motor (ex.: {"kimi": "nvidia_pro"}).
     """
-    prefixos = dict(PREFIXOS_MOTOR)
+    rotas = {**ROTAS_PADRAO, **(rotas or {})}
+    prefixos = {k: list(v) for k, v in PREFIXOS_MOTOR.items()}
     for nome in extras or []:
-        prefixos.setdefault(nome, [["pergunta", "pro", nome], ["pergunta", "para", "o", nome], ["no", nome], [nome]])
+        prefixos.setdefault(nome, []).extend(_prefixos_de(nome))
+    for falado, nome in (apelidos or {}).items():
+        prefixos.setdefault(nome, []).extend(_prefixos_de(falado))
+    # prefixo mais longo primeiro: "pergunta pro gemini" antes de "gemini"
+    for nome in prefixos:
+        prefixos[nome].sort(key=len, reverse=True)
+
+    cat = categoria(texto)
+    reserva = [n for n in (*rotas.get("rapido", []), *rotas.get("pc", []), "claude", "nemotron", *(extras or []))
+               if n in disponiveis]
+
+    def com_reserva(primeiros: list[str]) -> list[str]:
+        fila: list[str] = []
+        for n in (*primeiros, *reserva):
+            if n in disponiveis and n not in fila:
+                fila.append(n)
+        return fila
 
     for nome, lista in prefixos.items():
         for p in lista:
             resto = _tirar_prefixo(texto, p)
             if resto is not None and nome in disponiveis:
-                return nome, (resto or texto)
+                return com_reserva([nome]), (resto or texto), cat
 
     if modo and modo != "auto" and modo in disponiveis:
-        return modo, texto
+        return com_reserva([modo]), texto, cat
+    return com_reserva(rotas.get(cat, [])), texto, cat
 
-    preferido = "claude" if parece_acao(texto) else "nemotron"
-    if preferido in disponiveis:
-        return preferido, texto
-    for nome in ("claude", "nemotron", *(extras or [])):
-        if nome in disponiveis:
-            return nome, texto
-    return None, texto
+
+def escolher_motor(texto: str, modo: str, disponiveis: set[str], extras: list[str] | None = None,
+                   rotas: dict[str, list[str]] | None = None, apelidos: dict[str, str] | None = None) -> tuple[str | None, str]:
+    """Atalho de `rotear`: só o 1º motor da fila (None = nenhuma IA disponível)."""
+    fila, texto, _ = rotear(texto, modo, disponiveis, extras, rotas, apelidos)
+    return (fila[0] if fila else None), texto
 
 
 # --------------------------------------------------------------------------------------------- texto para fala

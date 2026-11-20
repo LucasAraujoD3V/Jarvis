@@ -9,6 +9,7 @@ Uso:
   python  jarvis.pyw --demo     só o popup em demonstração (sem microfone nem IA)
   python  jarvis.pyw --pedir "que horas são"   manda um pedido ao Jarvis que já está rodando (CMD/scripts)
   python  jarvis.pyw --falar "Backup concluído" faz o Jarvis rodando falar um texto
+  python  jarvis.pyw --ouvir "Jarvis, que horas são"  teste: como se o microfone tivesse ouvido (nome + janela)
 """
 
 from __future__ import annotations
@@ -139,13 +140,16 @@ def main() -> int:
     ap.add_argument("--sem-saudacao", action="store_true")
     ap.add_argument("--pedir", metavar="TEXTO", help="manda um pedido para o Jarvis que já está rodando")
     ap.add_argument("--falar", metavar="TEXTO", help="faz o Jarvis que já está rodando falar este texto")
+    ap.add_argument("--ouvir", metavar="TEXTO", help="teste: entrega TEXTO como se o microfone tivesse ouvido "
+                                                      "(passa pela palavra de ativação e pela janela de seguimento)")
     args = ap.parse_args()
 
-    if args.pedir or args.falar:  # modo comando: não abre interface, só conversa com a instância rodando
+    if args.pedir or args.falar or args.ouvir:  # modo comando: não abre interface, só conversa com a instância rodando
         from PySide6.QtCore import QCoreApplication
 
         _app = QCoreApplication(sys.argv)
-        ok = enviar_mensagem("pedir" if args.pedir else "falar", args.pedir or args.falar)
+        acao = "pedir" if args.pedir else "falar" if args.falar else "ouvir"
+        ok = enviar_mensagem(acao, args.pedir or args.falar or args.ouvir)
         if not ok and sys.stderr:
             print("Jarvis não está rodando.", file=sys.stderr)
         return 0 if ok else 1
@@ -182,7 +186,7 @@ def main() -> int:
     app.setWindowIcon(icone())
 
     assistente = Assistente(cfg, prefs)
-    motores = [("auto", "Automático (Nemotron conversa · Claude age)")] + [(k, m.rotulo) for k, m in assistente.motores.items()]
+    motores = [("auto", "Automático (escolhe a IA pelo tipo de pedido)")] + [(k, m.rotulo) for k, m in assistente.motores.items()]
     hud = HUD(nome)
     painel = Painel(nome, motores)
     bandeja = Bandeja(nome, motores)
@@ -338,6 +342,9 @@ def main() -> int:
             assistente.enviar_texto(texto)
         elif acao == "falar" and texto:
             assistente.dizer(texto)
+        elif acao == "ouvir" and texto:
+            log.info("Ouvido simulado (--ouvir): %s", texto)
+            assistente._ao_texto(texto)
         else:
             mostrar_painel()
 
