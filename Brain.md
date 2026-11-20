@@ -96,12 +96,17 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
   mas a transcrição para.
 - Não dá para interromper por voz enquanto ele fala (microfone mudo para não ouvir a si mesmo): clique no popup ou "Calar".
 - O nome do microfone vem cortado em 31 caracteres (limite do driver MME).
-- **Microfone deste PC (18/11/2026): nenhuma entrada tinha sinal** — "Microfone (High Definition Audio)" sem nada plugado
-  e "Microphone (Camo)" (celular como webcam) parado; todas davam silêncio digital. O Jarvis avisa no painel
-  ("Microfone sem sinal") depois de ~10–20 s. Conserto: plugar um microfone/headset ou abrir o Camo e clicar em
-  **Reiniciar** (o PortAudio só relê a lista de dispositivos ao subir). Para fixar um, `microfone.dispositivo` no
-  config.json aceita parte do nome, ex.: `"Camo"`.
-- Trocar o microfone padrão do Windows com o Jarvis aberto não muda nada até Reiniciar.
+- **Microfone deste PC (20/11/2026):** o "Microfone (High Definition Audio)" FUNCIONA, mas em silêncio dá rms ~0,5 —
+  igual a uma entrada vazia — e a fala chega baixa (sonda mediu ~10). Ele ouviu "Agora sim hein" às 00:27. Entradas
+  conhecidas: HD Audio (padrão), Camo (celular, só com o app aberto), fone Bluetooth "AL-1115 Hands-Free" (desconectado).
+- **Vigia do microfone** (`voz.py`): percentil 95 do volume em janelas de 10 s; 6 janelas quietas seguidas (1 min) →
+  aviso "Nenhum som há 1 min" e começa a **procurar outro microfone com som**: a cada ~20 s mede todas as entradas num
+  processo separado (enxerga fone Bluetooth conectado depois) e, se outra tiver som (rms ≥ 5), salva em
+  `preferencias.json → microfone`, reinicia sozinho e fala "Microfone conectado". `microfone.dispositivo` no config.json
+  (parte do nome, ex.: `"Camo"`) tem prioridade sobre essa escolha automática.
+- Cada frase captada vai para o log com o volume de pico ("Frase captada: … volume pico …") — base para calibrar
+  `microfone.limiar_minimo` (180 hoje; se ele não reagir à sua voz, baixar).
+- Encerramento usa `os._exit` depois de gravar tudo: em 20/11 um Jarvis ficou vivo após "reiniciar" e dois ouviam/falavam juntos.
 - No Windows 11 o ícone novo da bandeja nasce escondido em "^": arraste para a barra uma vez.
 
 ## Testes

@@ -83,7 +83,9 @@ class Assistente(QObject):
             self.motores[nome] = MotorCLI(nome, c, pasta)
 
         self.modo = prefs.get("motor") or cfg.get("motor_padrao", "auto")
-        self.ouvinte = Ouvinte(cfg.get("microfone", {}), cfg.get("idioma", "pt-BR"), self._ao_texto, self._nivel_mic, self._avisar)
+        self.ouvinte = Ouvinte(cfg.get("microfone", {}), cfg.get("idioma", "pt-BR"), self._ao_texto, self._nivel_mic, self._avisar,
+                               ao_sem_sinal=self._ao_sem_sinal, preferido=prefs.get("microfone"))
+        self._procura: threading.Thread | None = None
         self.falante = Falante(cfg.get("voz", {}), self._nivel_voz, self._ao_trecho)
 
         self._fila: queue.Queue = queue.Queue()
@@ -189,6 +191,39 @@ class Assistente(QObject):
     def _avisar(self, msg: str) -> None:
         log.info(msg)
         self.aviso.emit(msg)
+
+    # ================================================================= microfone sem som → procura outro
+    def _ao_sem_sinal(self, sem: bool) -> None:
+        if sem and (self._procura is None or not self._procura.is_alive()):
+            self._procura = threading.Thread(target=self._procurar_microfone, name="jarvis-procura-mic", daemon=True)
+            self._procura.start()
+
+    def _procurar_microfone(self) -> None:
+        """Enquanto o microfone atual estiver mudo, mede todas as entradas a cada ~20 s (processo separado, que enxerga
+        fone Bluetooth recém-conectado). Achou uma com som → salva como preferida e reinicia o Jarvis para usá-la."""
+        from .voz import escolher_microfone, sondar_microfones
+
+        while self._ligado and self.ouvinte.sem_sinal:
+            if self._estado in ("ouvindo", "atento"):
+                try:
+                    self.ouvinte.pausar_vigia(12)
+                    sondas = sondar_microfones()
+                    self.ouvinte.pausar_vigia(2)
+                    log.info("Sonda de microfones: %s", ", ".join(f"{s['nome']}={s['rms']:.1f}" for s in sondas))
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Não consegui medir os microfones: %s", e)
+                    sondas = []
+                melhor = escolher_microfone(sondas, self.ouvinte.nome_microfone)
+                if melhor and self._ligado and self.ouvinte.sem_sinal:
+                    self.prefs.set("microfone", {"nome": melhor["nome"], "api": melhor["api"]})
+                    self.prefs.set("aviso_inicio", "Microfone conectado. Pode falar.")
+                    self._avisar(f"Microfone com som encontrado: {melhor['nome']}. Reiniciando para usar ele.")
+                    self.pedir_reinicio.emit()
+                    return
+            for _ in range(40):
+                if not (self._ligado and self.ouvinte.sem_sinal):
+                    return
+                time.sleep(0.5)
 
     def _nivel_mic(self, v: float) -> None:
         if self._estado == "atento":

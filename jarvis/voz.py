@@ -42,15 +42,77 @@ def rms(a: np.ndarray) -> float:
     return float(np.sqrt(np.mean(a.astype(np.float32) ** 2)))
 
 
+# ===================================================================================================== microfones
+# Silêncio digital: entrada sem nada plugado, microfone virtual parado (Camo) ou fone Bluetooth desconectado dão rms < 1.
+# Um microfone de verdade, mesmo em sala quieta, passa disso. Medido em 18-20/11/2026: entradas vazias = 0,0 a 0,5.
+RMS_SEM_SINAL = 3.0
+RMS_COM_SINAL = 5.0
+
+# Roda em OUTRO processo: o PortAudio só lê a lista de dispositivos quando inicia, então um fone Bluetooth conectado
+# depois que o Jarvis abriu só aparece num processo novo.
+_SONDA = r"""
+import json, numpy as np, sounddevice as sd
+apis = sd.query_hostapis()
+saida = []
+for i, d in enumerate(sd.query_devices()):
+    if d["max_input_channels"] < 1 or apis[d["hostapi"]]["name"] != "MME":
+        continue
+    n = d["name"]
+    if "mapeador" in n.lower() or "mapper" in n.lower():
+        continue
+    try:
+        taxa = int(d["default_samplerate"])
+        a = sd.rec(int(taxa * 0.6), samplerate=taxa, channels=1, dtype="int16", device=i)
+        sd.wait()
+        v = a[:, 0].astype(np.float32)
+        saida.append({"nome": n, "api": "MME", "rms": float(np.sqrt(np.mean(v ** 2)))})
+    except Exception:
+        saida.append({"nome": n, "api": "MME", "rms": -1.0})
+print(json.dumps(saida))
+"""
+
+
+def sondar_microfones(timeout_s: float = 40) -> list[dict]:
+    """Mede ~0,6 s de cada entrada (MME) num processo separado. Devolve [{nome, api, rms}]."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    exe = Path(sys.executable)
+    py = exe.with_name("python.exe") if exe.with_name("python.exe").exists() else exe
+    r = subprocess.run([str(py), "-I", "-c", _SONDA], capture_output=True, text=True, timeout=timeout_s,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    linhas = [l for l in (r.stdout or "").strip().splitlines() if l.startswith("[")]
+    if not linhas:
+        raise RuntimeError(f"sonda de microfones falhou: {(r.stderr or '').strip()[:200]}")
+    return json.loads(linhas[-1])
+
+
+def mesmo_microfone(a: str, b: str) -> bool:
+    """MME corta o nome em 31 caracteres: 'Microfone (High Definition Audi' == 'Microfone (High Definition Audio Device)'."""
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    return bool(a and b) and (a in b or b in a)
+
+
+def escolher_microfone(sondas: list[dict], atual: str) -> dict | None:
+    """Entre as entradas medidas, a com mais som (acima de RMS_COM_SINAL) que não seja a atual. None = nenhuma melhor."""
+    candidatas = [s for s in sondas if s.get("rms", -1) >= RMS_COM_SINAL and not mesmo_microfone(s.get("nome", ""), atual)]
+    return max(candidatas, key=lambda s: s["rms"]) if candidatas else None
+
+
 # ===================================================================================================== Ouvinte
 class Ouvinte:
     def __init__(self, cfg_mic: dict, idioma: str, ao_texto: Callable[[str], None], ao_nivel: Callable[[float], None],
-                 ao_aviso: Callable[[str], None]):
+                 ao_aviso: Callable[[str], None], ao_sem_sinal: Callable[[bool], None] | None = None,
+                 preferido: dict | None = None):
         self.cfg = cfg_mic
         self.idioma = idioma
         self.ao_texto = ao_texto
         self.ao_nivel = ao_nivel
         self.ao_aviso = ao_aviso
+        self.ao_sem_sinal = ao_sem_sinal
+        self.preferido = preferido  # {"nome", "api"} escolhido sozinho (preferencias.json → microfone)
         self.limiar_minimo = float(cfg_mic.get("limiar_minimo", 180))
         self.fator = float(cfg_mic.get("fator_ruido", 2.6))
         self.silencio_fim = float(cfg_mic.get("silencio_fim_s", 0.9))
@@ -60,6 +122,7 @@ class Ouvinte:
         self.piso = 0.0
         self.nome_microfone = ""
         self.sem_sinal = False
+        self._vigia_pausado_ate = 0.0
         self.ouvindo_frase = False
         self._mudo_ate = 0.0
         self._mudo = False
@@ -89,7 +152,7 @@ class Ouvinte:
     def iniciar(self) -> None:
         if self._ativo.is_set():
             return
-        dev = self.cfg.get("dispositivo")
+        dev = self._resolver()
         info = sd.query_devices(dev, kind="input") if dev is not None else sd.query_devices(kind="input")
         self.nome_microfone = str(info["name"])
         self._stream = sd.InputStream(samplerate=TAXA_MIC, blocksize=BLOCO, channels=1, dtype="int16", device=dev, callback=self._cb)
@@ -100,6 +163,38 @@ class Ouvinte:
         for t in self._threads:
             t.start()
         log.info("Microfone aberto: %s", self.nome_microfone)
+
+    def _resolver(self):
+        """Índice do microfone: config.json (nome ou número) > preferido salvo > padrão do Windows (None).
+        Prefere a versão MME do dispositivo (converte a taxa sozinho)."""
+        cfg_dev = self.cfg.get("dispositivo")
+        if isinstance(cfg_dev, int):
+            return cfg_dev
+        alvo = str(cfg_dev) if cfg_dev else (self.preferido or {}).get("nome", "")
+        if not alvo:
+            return None
+        apis = sd.query_hostapis()
+        achados = []
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_input_channels"] >= 1 and mesmo_microfone(d["name"], alvo):
+                achados.append((0 if apis[d["hostapi"]]["name"] == "MME" else 1, i))
+        if not achados:
+            log.warning("Microfone '%s' não está conectado agora: usando o padrão do Windows", alvo)
+            return None
+        return min(achados)[1]
+
+    def pausar_vigia(self, segundos: float) -> None:
+        self._vigia_pausado_ate = time.monotonic() + segundos
+
+    def _mudar_sinal(self, sem: bool) -> None:
+        if sem == self.sem_sinal:
+            return
+        self.sem_sinal = sem
+        self.ao_aviso(f"Nenhum som no microfone há 1 min ({self.nome_microfone}). Se você falou e nada aconteceu, confira "
+                      "o microfone. Procurando outro microfone com som…" if sem else
+                      f"Microfone captando som ({self.nome_microfone}).")
+        if self.ao_sem_sinal:
+            self.ao_sem_sinal(sem)
 
     def parar(self) -> None:
         self._ativo.clear()
@@ -134,28 +229,37 @@ class Ouvinte:
         blocos: list[np.ndarray] = []
         voz_s = silencio_s = 0.0
         contador = 0
-        pico_janela = 0.0  # vigia de microfone mudo: maior volume nos últimos ~10 s
+        # vigia de microfone mudo: percentil 95 do volume em janelas de 10 s. Percentil (e não o máximo) porque
+        # entrada vazia solta estalos isolados que enganavam o vigia ("sem sinal" / "voltou" a cada minuto).
+        janela = collections.deque(maxlen=int(10 / BLOCO_S))
+        quietas = 0
+        ultimo_bloco = time.monotonic()
         self.sem_sinal = False
         while self._ativo.is_set():
             try:
                 bloco = self._audio.get(timeout=0.5)
             except queue.Empty:
+                if time.monotonic() - ultimo_bloco > 5:  # o dispositivo parou de mandar áudio (ex.: fone desconectado)
+                    self._mudar_sinal(True)
                 continue
             if bloco is None:
                 break
+            ultimo_bloco = time.monotonic()
             v = rms(bloco)
             historico.append(v)
+            janela.append(v)
             contador += 1
-            pico_janela = max(pico_janela, v)
-            if contador % int(10 / BLOCO_S) == 0:
-                mudo_agora = pico_janela < 3.0  # silêncio digital: nada plugado, mudo no Windows ou microfone virtual parado
-                if mudo_agora != self.sem_sinal:
-                    self.sem_sinal = mudo_agora
-                    self.ao_aviso(
-                        f"Microfone sem sinal ({self.nome_microfone}): desconectado ou mudo. Conecte/ative um microfone "
-                        "e clique em Reiniciar, ou escolha outro em config.json → microfone.dispositivo (ex.: \"Camo\")."
-                        if mudo_agora else "Microfone voltou a captar som.")
-                pico_janela = 0.0
+            if time.monotonic() < self._vigia_pausado_ate:  # outro processo mediu este microfone: ignora o tranco
+                janela.clear()
+            elif contador % int(10 / BLOCO_S) == 0 and len(janela) >= janela.maxlen // 2:
+                p95 = float(np.percentile(np.fromiter(janela, dtype=np.float32), 95))
+                # O microfone com fio deste PC fica em ~0,5 quando ninguém fala (igual a entrada vazia!), então só
+                # silêncio LONGO (6 janelas = 1 min) vira "sem som". Para voltar exige som claro (histerese).
+                quietas = quietas + 1 if p95 < RMS_SEM_SINAL else 0
+                if not self.sem_sinal and quietas >= 6:
+                    self._mudar_sinal(True)
+                elif self.sem_sinal and p95 >= RMS_COM_SINAL * 2:
+                    self._mudar_sinal(False)
             if contador % 10 == 0 and len(historico) > 20:
                 self.piso = float(np.percentile(np.fromiter(historico, dtype=np.float32), 20))
                 self.limiar = max(self.limiar_minimo, self.piso * self.fator)
@@ -190,8 +294,12 @@ class Ouvinte:
             dur = len(blocos) * BLOCO_S
             if silencio_s >= self.silencio_fim or dur >= self.max_frase:
                 if voz_s >= self.fala_minima:
+                    audio = np.concatenate(blocos)
+                    # registra o volume das frases: base para calibrar limiar_minimo no microfone real
+                    log.info("Frase captada: %.1f s, voz %.1f s, volume pico %.0f (limiar %.0f)",
+                             dur, voz_s, max(rms(audio[i:i + BLOCO]) for i in range(0, len(audio), BLOCO)), self.limiar)
                     try:
-                        self._frases.put_nowait(np.concatenate(blocos))
+                        self._frases.put_nowait(audio)
                     except queue.Full:
                         log.warning("Fila de transcrição cheia: frase descartada")
                 gravando = False

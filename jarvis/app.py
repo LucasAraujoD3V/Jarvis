@@ -21,6 +21,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -52,7 +53,11 @@ def configurar_log(console: bool) -> None:
     def excecao(tipo, valor, tb):
         log.critical("Erro não tratado", exc_info=(tipo, valor, tb))
 
+    def excecao_thread(a):  # sem isto, erro em thread some (pythonw não tem stderr)
+        log.critical("Erro na thread %s", a.thread.name if a.thread else "?", exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+
     sys.excepthook = excecao
+    threading.excepthook = excecao_thread
 
 
 def enviar_mensagem(acao: str, texto: str = "") -> bool:
@@ -346,7 +351,16 @@ def main() -> int:
     saudar = not args.sem_saudacao and not args.reiniciado
     # no boot o Windows ainda está subindo áudio/rede: espera um pouco antes de abrir o microfone
     QTimer.singleShot(8000 if args.boot else 300, lambda: assistente.ligar(saudar=saudar))
+    aviso_inicio = prefs.get("aviso_inicio")  # ex.: reiniciou sozinho porque achou um microfone com som
+    if aviso_inicio:
+        prefs.set("aviso_inicio", None)
+        QTimer.singleShot(9500 if args.boot else 1500, lambda: assistente.dizer(aviso_inicio))
     if not args.boot and not args.reiniciado:  # aberto à mão: mostra o painel; no boot fica só na bandeja
         QTimer.singleShot(400, mostrar_painel)
     log.info("Jarvis iniciado (boot=%s, reiniciado=%s)", args.boot, args.reiniciado)
-    return app.exec()
+    codigo = app.exec()
+    # Sai na marra: em 20/11 um Jarvis ficou vivo depois de "reiniciar" (preso no encerramento do áudio nativo) e
+    # ficaram DOIS ouvindo e falando. Tudo que importa (preferências, log) já foi gravado.
+    log.info("Jarvis encerrado")
+    logging.shutdown()
+    os._exit(codigo)
