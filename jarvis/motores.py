@@ -421,10 +421,28 @@ class MotorCLI:
         self.conversa = None
         self.ultimo_erro = ""
         self._pausado_ate = 0.0  # sem login: sai da fila por um tempo, para não atrasar todo pedido
+        # "logado" = este arquivo existe e contém este texto (ex.: ~/.gemini/settings.json com "selectedType").
+        # Conferido a cada 30 s: depois do login a IA entra na fila sozinha, sem reiniciar o Jarvis.
+        self.login_arquivo = Path(os.path.expanduser(c["login_arquivo"])) if c.get("login_arquivo") else None
+        self.login_contem = c.get("login_contem") or ""
+        self._login_ok = False
+        self._login_visto = -1e9
+
+    def logado(self) -> bool:
+        if self.login_arquivo is None:
+            return True
+        if time.monotonic() - self._login_visto > 30:
+            self._login_visto = time.monotonic()
+            try:
+                self._login_ok = self.login_arquivo.is_file() and self.login_contem in self.login_arquivo.read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                self._login_ok = False
+        return self._login_ok
 
     @property
     def disponivel(self) -> bool:
-        return self.ativo and bool(self.exe) and time.monotonic() >= self._pausado_ate
+        return self.ativo and bool(self.exe) and time.monotonic() >= self._pausado_ate and self.logado()
 
     @property
     def motivo(self) -> str:
@@ -432,7 +450,7 @@ class MotorCLI:
             return "desativado no config.json"
         if not self.exe:
             return f"comando '{self.comando[0] if self.comando else '?'}' não encontrado"
-        if time.monotonic() < self._pausado_ate:
+        if time.monotonic() < self._pausado_ate or not self.logado():
             return f"sem login (rode '{self.comando[0]}' no terminal uma vez)"
         return ""
 

@@ -113,7 +113,7 @@ class Ouvinte:
         self.ao_aviso = ao_aviso
         self.ao_sem_sinal = ao_sem_sinal
         self.preferido = preferido  # {"nome", "api"} escolhido sozinho (preferencias.json → microfone)
-        self.limiar_minimo = float(cfg_mic.get("limiar_minimo", 180))
+        self.limiar_minimo = float(cfg_mic.get("limiar_minimo", 20))
         self.fator = float(cfg_mic.get("fator_ruido", 2.6))
         self.silencio_fim = float(cfg_mic.get("silencio_fim_s", 0.9))
         self.max_frase = float(cfg_mic.get("max_frase_s", 15))

@@ -10,6 +10,25 @@ Junta três peças que já existiam na pasta `Data`:
   rápido e uma **conta própria** (pendente — ver Configuração).
 - **Claude Code logado no PC** (`claude -p`): usa a conta já logada, sem chave de API.
 
+Desde 20/11/2026 também usa **Gemini CLI** (conta Google) e **Codex CLI** (conta ChatGPT), tem **memória que você
+ensina por voz** e escolhe a IA pelo tipo de pedido. **Regra: nenhuma API paga** — só contas já logadas por linha de
+comando ou coisas grátis (API grátis da NVIDIA).
+
+**Spider ("aranha")** = `Data\Spider`: painel-teia com todas as contas de IA, nuvem e VPS do Lucas (Nemotron no centro,
+roda na VPS 1 em `http://100.119.108.26:3060` com o Tailscale). Ainda não está ligado ao Jarvis (ideia: o Jarvis
+perguntar ao Spider qual conta usar, e o Spider mostrar as IAs do Jarvis na teia).
+
+## Pendências (20/11/2026)
+1. **Login do Gemini** (o Lucas faz): no terminal, `& "$HOME\.local\npm\gemini.cmd"` → Trust folder → Login with Google.
+   Depois do login o Gemini entra na fila sozinho (o Jarvis confere `~/.gemini/settings.json` a cada 30 s).
+   Falta medir a latência dele (papo e busca na web) e confirmar se fica em 1º na fila `internet`.
+2. **Chave NVIDIA nova** (o Lucas cria em build.nvidia.com e cola no painel). Depois:
+   `python ferramentas/comparar_modelos.py` (7 modelos, 3 perguntas de raciocínio, ≤ 60 s cada) → pôr o vencedor em
+   `nvidia_pro.modelo`/`rotulo`/`apelidos` no config.json. Até lá `nvidia_pro` aponta para `moonshotai/kimi-k3.1-pro` (palpite).
+3. **Ollama: não instalado (decisão).** GPU GTX 1650 de 4 GB só roda modelo de ~3–4B, mais fraco e mais lento que o
+   Nemotron grátis, e sem internet o Jarvis já não transcreve a voz — ganho pequeno para baixar ~2,6 GB.
+4. Calibrar o microfone com a voz real (ver "Calibração do limiar" em Limitações).
+
 ## Como usar
 
 - **Falar:** "Jarvis, <pedido>". Ex.: "Jarvis, que horas são?", "Jarvis, pergunta pro Claude o status da Mesa Traders".
@@ -67,7 +86,7 @@ jarvis/config.py      config.json, .env, preferencias.json
 segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (ciano claro, barras no ritmo da voz).
 
 ### Fluxo de um pedido
-1. Microfone contínuo; fala detectada por energia (limiar = 20º percentil do ruído × 2,6, mínimo 180) → frase termina com 0,9 s de silêncio.
+1. Microfone contínuo; fala detectada por energia (limiar = 20º percentil do ruído × 2,6, mínimo 20) → frase termina com 0,9 s de silêncio.
 2. Google Speech (pt-BR, grátis) transcreve. Sem "Jarvis" e fora da janela de seguimento → ignora.
 3. `comando_local` (frase exata) ou IA. Microfone fica **mudo enquanto ele fala** (não ouve a própria voz).
 4. Memória ("lembra que…", "esquece…", "o que você sabe de mim") é resolvida antes de tudo (`texto.comando_memoria`).
@@ -109,7 +128,7 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
 | Claude | `claude -p <texto> --output-format json --permission-mode auto --model sonnet --strict-mcp-config --append-system-prompt <regras de voz>` na pasta `Data` | 5–6 s simples; 15–25 s com ferramenta/web | Conta logada. `--resume <session_id>` mantém a conversa. Cancelar mata a árvore de processos (`taskkill /T`). `--strict-mcp-config` corta o contexto de ~52k para ~14k tokens. |
 | Kimi (`nvidia_pro`) | mesma API da NVIDIA, modelo do config `nvidia_pro.modelo` (escolhido no teste de raciocínio) | — (medir com a chave) | Perguntas difíceis. Mesma chave do Nemotron. Sem internet/PC (ENCAMINHAR). |
 | Gemini | `gemini -o json -p " "` com o pedido no **stdin** (Gemini CLI 0.70, conta Google logada) | — (medir após login) | Busca do Google embutida. Sem aprovação no modo headless: só lê/pesquisa, não altera arquivos. |
-| Codex | `codex exec --skip-git-repo-check -c model_reasoning_effort=low -` com o pedido no stdin (Codex CLI 0.171, conta ChatGPT já logada em `~/.codex`) | 4,8–6,2 s ("responda só: ok") | Sandbox só-leitura, aprovação "never": lê arquivos, não altera. Reserva para pedidos de PC. |
+| Codex | `codex exec --skip-git-repo-check -c model_reasoning_effort=low -` com o pedido no stdin (Codex CLI 0.171, conta ChatGPT já logada em `~/.codex`) | 4,8–6,2 s ("responda só: ok"); 14,9 s contando arquivos de uma pasta pelo Jarvis (acertou: 14) | Sandbox só-leitura, aprovação "never": lê arquivos, não altera. Reserva para pedidos de PC. |
 
 **Instalação das CLIs (atenção):** o app do Claude no Windows é um pacote MSIX; um `npm install -g` rodado de dentro
 dele cai numa pasta `AppData` **virtual** que o resto do Windows não vê (o Jarvis e o terminal não achavam o `gemini`).
@@ -153,17 +172,27 @@ O mesmo vale para `pip install` feito de dentro do app: rode no terminal normal.
   processo separado (enxerga fone Bluetooth conectado depois) e, se outra tiver som (rms ≥ 5), salva em
   `preferencias.json → microfone`, reinicia sozinho e fala "Microfone conectado". `microfone.dispositivo` no config.json
   (parte do nome, ex.: `"Camo"`) tem prioridade sobre essa escolha automática.
-- Cada frase captada vai para o log com o volume de pico ("Frase captada: … volume pico …") — base para calibrar
-  `microfone.limiar_minimo` (180 hoje; se ele não reagir à sua voz, baixar).
+- **Calibração do limiar (20/11/2026): `microfone.limiar_minimo` 180 → 20.** Medido (rms por bloco de 30 ms, igual ao
+  Jarvis): silêncio = 0,5–0,9; voz do Windows tocada no alto-falante chega com blocos de 10–44; o log "Som sem frase"
+  mostrou falas que o limiar 180 deixou passar com p99 de 34 a 97. Simulando o detector do Jarvis nessas gravações:
+  limiar 20 capta a fala baixa e dá **0 disparos falsos em 2,5 min de sala quieta**; 25 ou mais já perdia a fala baixa.
+  Com ruído de fundo o limiar sobe sozinho (20º percentil do ruído × 2,6). Pelo alto-falante o Google não transcreveu
+  (nem amplificando 337×): é qualidade do som que chega, não volume — por isso não há ganho digital.
+  **Se ele ainda não reagir à voz normal:** Configurações do Windows → Sistema → Som → Microfone (High Definition Audio)
+  → Volume de entrada 100 e, em Propriedades → Níveis, "Aumento do microfone" +10/+20 dB (isso o usuário faz).
+- Log para calibrar: "Frase captada: … volume pico … (limiar …)" a cada frase, e **"Som sem frase (1 min): pico, p99"**
+  quando houve som bem acima do ruído num minuto sem nenhuma frase captada (= fala que o limiar deixou passar).
 - Encerramento usa `os._exit` depois de gravar tudo: em 20/11 um Jarvis ficou vivo após "reiniciar" e dois ouviam/falavam juntos.
 - No Windows 11 o ícone novo da bandeja nasce escondido em "^": arraste para a barra uma vez.
 
 ## Testes
-- `python -m unittest discover -s tests -v` — 55 testes (ativação, comandos locais, roteamento por tipo, memória e
-  conversa em disco, memória chegando no prompt de cada IA, CLI pelo stdin, limpeza de fala, motor Nemotron sem rede).
+- `python -m unittest discover -s tests -v` — 56 testes (ativação, comandos locais, roteamento por tipo, memória e
+  conversa em disco, memória chegando no prompt de cada IA, CLI pelo stdin e só com login, limpeza de fala, motor Nemotron sem rede).
 - Teste de janela de seguimento (20/11/2026, `--ouvir`): "Jarvis, quanto é 7 vezes 8?" → "Cinquenta e seis." → em 1 s,
   sem o nome, "Ô Maria, pega o carregador pra mim lá na sala" → **ignorado** (IGNORAR); "Jarvis, qual a capital da
   Austrália?" → "Canberra." → "agora sim hein" → "Pois é." (antes respondia "Não entendi o pedido…").
+- Ouvido pelo ar (20/11): voz do Windows no alto-falante → com limiar 20 o Jarvis registrou "Frase captada" (pico 39–52),
+  mas o Google não transcreveu a voz sintética captada assim; com a voz real o Jarvis já transcreveu ("Agora sim hein", 00:27).
 - Ouvido sem hardware (18/11/2026): voz sintetizada + ruído injetados na fila do microfone → detector de fala →
   Google → ativação: "Jarvis, quanto é dois mais dois?" virou comando "Quanto é 2 + 2"; frase sem o nome foi ignorada;
   "que horas são, Jarvis?" virou "Que horas são"; 22 s de silêncio digital dispararam o aviso de microfone mudo.

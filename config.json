@@ -16,7 +16,7 @@
 
   "microfone": {
     "dispositivo": null,
-    "limiar_minimo": 180,
+    "limiar_minimo": 20,
     "fator_ruido": 2.6,
     "silencio_fim_s": 0.9,
     "max_frase_s": 15,
@@ -72,11 +72,13 @@
   "motores_extras": {
     "gemini": {
       "ativo": true, "rotulo": "Gemini", "apelidos": ["gemini", "jemini", "gemine"],
-      "comando": ["gemini", "-o", "json", "-p", " "], "saida_json": "response", "timeout_s": 120
+      "comando": ["gemini", "-o", "json", "-p", " "], "saida_json": "response", "timeout_s": 120,
+      "login_arquivo": "~/.gemini/settings.json", "login_contem": "selectedType"
     },
     "codex": {
       "ativo": true, "rotulo": "Codex", "apelidos": ["codex", "codecs", "chatgpt", "gpt"],
-      "comando": ["codex", "exec", "--skip-git-repo-check", "-c", "model_reasoning_effort=low", "-"], "timeout_s": 180
+      "comando": ["codex", "exec", "--skip-git-repo-check", "-c", "model_reasoning_effort=low", "-"], "timeout_s": 180,
+      "login_arquivo": "~/.codex/auth.json", "login_contem": "tokens"
     }
   },
 

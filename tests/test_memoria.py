@@ -158,6 +158,16 @@ class TestContextoNasIAs(unittest.TestCase):
         self.assertIn("quanto é 2 mais 2", saida)
         self.assertIn("Pedido do usuário: que horas são", saida)
 
+    def test_cli_so_entra_na_fila_logada(self):
+        arq = Path(tempfile.mkdtemp()) / "settings.json"
+        m = MotorCLI("g", {"ativo": True, "comando": [sys.executable], "login_arquivo": str(arq),
+                           "login_contem": "selectedType"}, Path("."))
+        self.assertFalse(m.disponivel)
+        self.assertIn("sem login", m.motivo)
+        arq.write_text('{"security": {"auth": {"selectedType": "oauth-personal"}}}', encoding="utf-8")
+        m._login_visto = -1e9  # pula o cache de 30 s
+        self.assertTrue(m.disponivel)
+
     def test_cli_saida_json(self):
         js = [sys.executable, "-c", "import sys, json; sys.stdin.read(); print('aviso qualquer'); "
               "print(json.dumps({'response': 'Olá!', 'stats': {}}))"]
