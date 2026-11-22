@@ -15,6 +15,7 @@ Tudo que é lento roda em threads; a interface só recebe sinais Qt (seguros ent
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import queue
 import random
@@ -27,8 +28,9 @@ from .config import RAIZ, caminho, ler_env
 from .memoria import Conversa, Memoria
 from .motores import (Cancelado, ErroMotor, MotorClaude, MotorCLI, MotorNemotron, SINAL_ENCAMINHAR, SINAL_IGNORAR,
                       nota_seguimento)
-from .texto import (ROTAS_PADRAO, comando_local, comando_memoria, extrair_comando, limpar_para_fala,
-                    normalizar_token, pedido_de_motor, rotear)
+from .stt import Transcritor
+from .texto import (ROTAS_PADRAO, DivisorFala, comando_local, comando_memoria, data_falada, extrair_comando,
+                    hora_falada, limpar_para_fala, normalizar_token, pedido_de_motor, rotear)
 from .voz import Falante, Ouvinte
 
 MOTORES_COM_FERRAMENTAS = ("claude", "gemini", "codex")  # para onde vai o que o modelo sem internet ENCAMINHAR
@@ -55,6 +57,74 @@ def previa_para(texto: str) -> str:
     return random.choice(["Certo. Um momento.", "Entendido. Um momento.", "Deixa comigo."])
 
 
+def periodo_do_dia(hora: int) -> str:
+    return "Bom dia" if 5 <= hora < 12 else "Boa tarde" if 12 <= hora < 18 else "Boa noite"
+
+
+class FalaEmFluxo:
+    """
+    Fala a resposta ENQUANTO a IA ainda escreve (Claude em streaming): cada frase pronta vai para a voz na hora.
+    Uma por pedido. Segura a 1ª frase até saber que não é IGNORAR (fala que não era para o Jarvis). Se a IA for usar
+    uma ferramenta sem ter dito nada, fala a prévia ("Abrindo.") para não ficar mudo.
+    """
+
+    def __init__(self, assistente: "Assistente", previa: str = ""):
+        self.a = assistente
+        self.divisor = DivisorFala(assistente.max_fala)
+        self.previa = previa
+        self.fila: queue.Queue = queue.Queue()
+        self.ignorar = False
+        self.comecou = False
+        self._decidido = False
+        self._thread: threading.Thread | None = None
+
+    def _enviar(self, frases: list[str]) -> None:
+        for f in frases:
+            if not self._decidido:
+                self._decidido = True
+                self.ignorar = f.strip().upper().startswith(SINAL_IGNORAR)
+            if self.ignorar:
+                return
+            if self._thread is None:
+                self.a.ouvinte.definir_mudo(True)
+                self._thread = threading.Thread(target=self._falar, name="jarvis-fala-fluxo", daemon=True)
+                self._thread.start()
+            self.comecou = True
+            self.fila.put(f)
+
+    def parcial(self, pedaco: str) -> None:
+        self._enviar(self.divisor.alimentar(pedaco))
+
+    def ferramenta(self, _nome: str) -> None:
+        if not self.comecou and self.previa and not self.ignorar:
+            self._decidido = True
+            self._enviar([self.previa])
+            self.previa = ""
+
+    def terminar(self) -> bool:
+        """A IA acabou: fala o que sobrou e espera a voz terminar. True = falou alguma coisa."""
+        self._enviar(self.divisor.terminar())
+        if self.divisor.cortado and self.comecou:
+            self.fila.put("O resto está no painel.")
+        return self._fechar()
+
+    def abortar(self) -> bool:
+        """A IA falhou/foi cancelada: termina só o que já estava na fila. True = tinha falado algo."""
+        return self._fechar()
+
+    def _fechar(self) -> bool:
+        self.fila.put(None)
+        if self._thread is not None:
+            self._thread.join()
+        return self.comecou
+
+    def _falar(self) -> None:
+        try:
+            self.a.falante.falar_fila(self.fila, self.a._cancelar)
+        finally:
+            self.a.ouvinte.definir_mudo(False)
+
+
 class Assistente(QObject):
     estado = Signal(str)               # desligado | ouvindo | atento | pensando | falando
     nivel = Signal(float)              # 0..1 — volume da voz (falando) ou do microfone (atento)
@@ -69,6 +139,7 @@ class Assistente(QObject):
         self.cfg = cfg
         self.prefs = prefs
         self.nome = cfg.get("nome", "Jarvis")
+        self.usuario = cfg.get("usuario", "") or ""
         self.chaves = cfg.get("palavras_chave") or [self.nome.lower()]
         self.semelhanca = float(cfg.get("semelhanca_minima", 0.75))
         conv = cfg.get("conversa", {})
@@ -77,7 +148,9 @@ class Assistente(QObject):
         self.reset_s = float(conv.get("nova_conversa_apos_min", 720)) * 60  # 0 = nunca
         self.previa = bool(conv.get("previa_quando_demora", True))
         turnos = int(conv.get("historico_turnos", 10))
-        estilo = list(cfg.get("estilo_resposta") or [])
+        # quem o Jarvis é (config.json → persona). O antigo "estilo_resposta" (regras de economia de token pensadas para
+        # o chat do Claude Code) NÃO é mais lido: deixava a fala robótica ("Eu corrigir código").
+        persona = [self._formatar(linha) for linha in (cfg.get("persona") or [])]
         pasta = caminho(cfg.get("claude", {}).get("pasta_trabalho", ".."))
 
         # memória (fatos ensinados) e conversa (últimas trocas): em disco, valem para todas as IAs
@@ -86,12 +159,12 @@ class Assistente(QObject):
 
         env = ler_env()
         chave = env.get("NVIDIA_API_KEY", "")
-        self.motores = {"nemotron": MotorNemotron(cfg, chave, self.nome, estilo, turnos)}
+        self.motores = {"nemotron": MotorNemotron(cfg, chave, self.nome, persona, turnos)}
         if cfg.get("nvidia_pro"):
-            self.motores["nvidia_pro"] = MotorNemotron(cfg, chave, self.nome, estilo, turnos, nome="nvidia_pro")
-        self.motores["claude"] = MotorClaude(cfg, pasta, self.nome, estilo)
+            self.motores["nvidia_pro"] = MotorNemotron(cfg, chave, self.nome, persona, turnos, nome="nvidia_pro")
+        self.motores["claude"] = MotorClaude(cfg, pasta, self.nome, persona)
         for nome, c in (cfg.get("motores_extras") or {}).items():
-            self.motores[nome] = MotorCLI(nome, c, pasta, self.nome, estilo)
+            self.motores[nome] = MotorCLI(nome, c, pasta, self.nome, persona)
         for m in self.motores.values():
             m.memoria = self.memoria
             m.conversa = self.conversa
@@ -113,7 +186,10 @@ class Assistente(QObject):
         self.motores["claude"].sessao = prefs.get("claude_sessao") or None
 
         self.modo = prefs.get("motor") or cfg.get("motor_padrao", "auto")
-        self.ouvinte = Ouvinte(cfg.get("microfone", {}), cfg.get("idioma", "pt-BR"), self._ao_texto, self._nivel_mic, self._avisar,
+        self.transcritor = Transcritor(cfg.get("transcricao", {}), cfg.get("idioma", "pt-BR"), self.nome, self._avisar,
+                                       prefs=prefs, raiz=RAIZ)
+        self._transcritor_preparado = False
+        self.ouvinte = Ouvinte(cfg.get("microfone", {}), self.transcritor, self._ao_texto, self._nivel_mic, self._avisar,
                                ao_sem_sinal=self._ao_sem_sinal, preferido=prefs.get("microfone"))
         self._procura: threading.Thread | None = None
         self.falante = Falante(cfg.get("voz", {}), self._nivel_voz, self._ao_trecho)
@@ -137,6 +213,29 @@ class Assistente(QObject):
             import miniaudio  # noqa: F401
         except Exception:
             pass
+
+    def _formatar(self, texto: str) -> str:
+        """Troca {usuario}, {nome} e {periodo} ('Bom dia'...) nas frases do config.json."""
+        try:
+            return str(texto).format(usuario=self.usuario or "você", nome=self.nome,
+                                     periodo=periodo_do_dia(_dt.datetime.now().hour))
+        except (KeyError, IndexError, ValueError):
+            return str(texto)
+
+    def _frase_do_config(self, chave: str, padrao: str) -> str:
+        v = self.cfg.get(chave) or padrao
+        if isinstance(v, list):
+            v = random.choice(v) if v else padrao
+        return self._formatar(v)
+
+    def encerrar(self) -> None:
+        """Saída do programa: fecha o processo do Claude que fica aberto entre os pedidos."""
+        for m in self.motores.values():
+            if hasattr(m, "encerrar"):
+                try:
+                    m.encerrar()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ================================================================= controle (chamado pela interface)
     @property
@@ -164,12 +263,22 @@ class Assistente(QObject):
             return
         self._ligado = True
         self._definir_estado("ouvindo")
+        if not self._transcritor_preparado:  # Whisper: testa a GPU e carrega o modelo sem travar o resto
+            self._transcritor_preparado = True
+            threading.Thread(target=self.transcritor.preparar, name="jarvis-stt-prepara", daemon=True).start()
+        claude = self.motores["claude"]
+        if claude.disponivel:  # já deixa o processo do Claude aberto: o 1º pedido não paga a partida (~2 s)
+            threading.Thread(target=claude.aquecer, name="jarvis-claude-aquece", daemon=True).start()
+        # frases curtas que ele mais fala já ficam sintetizadas (o Edge leva ~1–2 s por frase)
+        curtas = [self._formatar(f) for f in (self.cfg.get("respostas_ativacao") or [])]
+        curtas += list(PREVIAS.values()) + ["Ok.", "Anotado.", "Disponha.", "Às ordens."]
+        threading.Thread(target=self.falante.preaquecer, args=(curtas,), name="jarvis-voz-aquece", daemon=True).start()
         disp = self.motores_disponiveis()
         self._avisar(f"Ligado. Microfone: {self.ouvinte.nome_microfone}. IAs: {', '.join(sorted(disp)) or 'nenhuma'}.")
-        if "nemotron" not in disp:
-            self._avisar(f"Nemotron desligado: {self.motores['nemotron'].motivo}.")
+        if not claude.disponivel:
+            self._avisar(f"Claude indisponível: {claude.motivo}. Respondendo com as reservas.")
         if saudar and self.cfg.get("saudacao"):
-            self.dizer(self.cfg["saudacao"], abrir_janela=False)
+            self.dizer(self._frase_do_config("saudacao", "{periodo}."), abrir_janela=False)
 
     def desligar(self) -> None:
         if self._tentar_de_novo:
@@ -294,7 +403,7 @@ class Assistente(QObject):
             self._abrir_janela()
             self._definir_estado("atento")
             self.legenda.emit("voce", texto)
-            self.dizer(random.choice(self.cfg.get("respostas_ativacao") or ["Sim?"]), abrir_janela=True)
+            self.dizer(self._frase_do_config("respostas_ativacao", "Sim?"), abrir_janela=True)
             return
         # sem o nome = veio na janela de seguimento: pode ser comentário ou conversa com outra pessoa
         self._tratar_comando(resto if achou else texto, seguimento=not achou)
@@ -336,6 +445,13 @@ class Assistente(QObject):
             else:
                 self.definir_motor(modo)
                 self.dizer(f"Usando {self.rotulo_motor(modo)}.", abrir_janela=True)
+        elif local in ("hora", "data"):
+            agora = _dt.datetime.now()
+            fala = (hora_falada(agora.hour, agora.minute) if local == "hora"
+                    else data_falada(agora.weekday(), agora.day, agora.month))
+            self.registro.emit("jarvis", fala, "local")
+            self.conversa.adicionar(cmd, fala, "local")
+            self.dizer(fala, abrir_janela=True)
         elif local == "desligar":
             self.parar()
             self._fila.put(("falar", "Desligando. Me ligue pela bandeja.", False))
@@ -469,10 +585,12 @@ class Assistente(QObject):
         envio = texto + (nota_seguimento(self.nome) if seguimento else "")
         # papo rápido não ganha "Um momento." antes: a prévia é só para o que demora de verdade
         previa = previa_para(texto) if (self.previa and cat != "rapido") else ""
-        resposta, motor, ms = self._consultar(fila, envio, disp, previa)
+        resposta, motor, ms, fluxo = self._consultar(fila, envio, disp, previa)
         if resposta is None:
             return
         if resposta.strip().upper().startswith(SINAL_IGNORAR):
+            if fluxo is not None:
+                fluxo.abortar()
             log.info("Ignorado (%s achou que não era para mim): %s", motor.rotulo, texto)
             self.registro.emit("status", "Não era comigo: fiquei quieto", motor.rotulo)
             self._janela_ate = 0
@@ -482,13 +600,20 @@ class Assistente(QObject):
         self.conversa.adicionar(pedido_original or texto, resposta, motor.nome)
         if motor.nome == "claude":
             self.prefs.set("claude_sessao", motor.sessao)
+        if fluxo is not None and fluxo.terminar():
+            # já falou enquanto a IA escrevia: só falta abrir a janela de seguimento
+            if self._ligado and not self._cancelar.is_set():
+                self._abrir_janela()
+            return
         fala, cortado = limpar_para_fala(resposta, self.max_fala)
         if cortado:
             fala += " O resto está no painel."
         self._falar(fala or "Feito.", abrir_janela=True)
 
     def _consultar(self, fila: list[str], texto: str, disp: set[str], previa: str = ""):
-        """Pergunta ao 1º motor da fila; se ele falhar, tenta o próximo. Devolve (resposta, motor, ms) ou (None, ...)."""
+        """Pergunta ao 1º motor da fila; se ele falhar, tenta o próximo.
+        Devolve (resposta, motor, ms, fluxo) ou (None, ...). `fluxo` (FalaEmFluxo) = motor que fala enquanto gera;
+        quem chama faz fluxo.terminar() para falar o fim e esperar a voz."""
         tentativas = list(fila)
         com_ferramentas = [n for n in MOTORES_COM_FERRAMENTAS if n in disp]
         for m in self.motores.values():
@@ -499,21 +624,34 @@ class Assistente(QObject):
             motor = self.motores[n]
             self._definir_estado("pensando")
             self.legenda.emit("status", f"Pensando · {motor.rotulo}")
+            fluxo = FalaEmFluxo(self, previa) if getattr(motor, "fluxo", False) else None
             previa_thread = None
-            if motor.lento and previa:
+            if fluxo is not None:
+                previa = ""  # o fluxo fala a prévia só se a IA for usar ferramenta sem dizer nada antes
+            elif motor.lento and previa:
                 previa_thread = threading.Thread(target=self._falar_previa, args=(previa,), daemon=True)
                 previa = ""  # uma prévia só, mesmo se cair para outra IA
                 previa_thread.start()
             t0 = time.monotonic()
             try:
-                resposta = motor.perguntar(texto, self._cancelar)
+                if fluxo is not None:
+                    resposta = motor.perguntar(texto, self._cancelar, ao_parcial=fluxo.parcial,
+                                               ao_ferramenta=fluxo.ferramenta)
+                else:
+                    resposta = motor.perguntar(texto, self._cancelar)
             except Cancelado:
                 log.info("Pedido cancelado")
-                return None, motor, 0
+                if fluxo is not None:
+                    fluxo.abortar()
+                return None, motor, 0, None
             except ErroMotor as e:
                 ultimo_erro = str(e)
                 log.warning("%s falhou: %s", motor.rotulo, e)
                 self._avisar(f"{motor.rotulo} falhou: {e}")
+                if fluxo is not None and fluxo.abortar():
+                    # já tinha falado parte da resposta: outra IA começaria do zero e repetiria. Avisa e para.
+                    self._falar("Perdi a conexão no meio da resposta.", abrir_janela=True)
+                    return None, motor, 0, None
                 continue
             finally:
                 if previa_thread:
@@ -529,7 +667,9 @@ class Assistente(QObject):
                 log.info("%s encaminhou para %s: %s", motor.rotulo, destino, texto)
                 self.registro.emit("status", f"{motor.rotulo} encaminhou para {destino}", "")
                 continue
-            self._definir_estado("pensando")
-            return resposta, motor, ms
-        self._falar("Não consegui responder agora. " + (ultimo_erro.split(":")[0] if ultimo_erro else ""), abrir_janela=False)
-        return None, None, 0
+            if fluxo is None or not fluxo.comecou:
+                self._definir_estado("pensando")
+            return resposta, motor, ms, fluxo
+        motivo = "O Claude está sem login." if "sem login" in ultimo_erro else (ultimo_erro.split(":")[0] if ultimo_erro else "")
+        self._falar("Não consegui responder agora. " + motivo, abrir_janela=False)
+        return None, None, 0, None

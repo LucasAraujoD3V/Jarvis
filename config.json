@@ -1,11 +1,23 @@
 {
   "nome": "Jarvis",
+  "usuario": "Lucas",
   "palavras_chave": ["jarvis", "jarbas", "jarvas", "jervis", "javis", "jarvi", "jarves", "harvis", "garvis"],
   "semelhanca_minima": 0.75,
   "idioma": "pt-BR",
-  "saudacao": "Jarvis online. Pronto quando precisar.",
-  "respostas_ativacao": ["Sim?", "Pois não?", "Estou ouvindo."],
+  "saudacao": ["{periodo}, {usuario}. Tô online.", "{periodo}, {usuario}. Pronto quando precisar.", "{periodo}. Jarvis no ar."],
+  "respostas_ativacao": ["Sim?", "Pois não?", "Diga, {usuario}.", "Tô ouvindo.", "Fala."],
   "iniciar_com_windows": true,
+
+  "persona": [
+    "Você trabalha para {usuario} e já o conhece bem: use o que sabe dele com naturalidade, sem ficar dizendo que tem anotado.",
+    "Personalidade: calmo, confiante e leal, com humor seco e inteligente. Uma ironia leve de vez em quando cai bem; nunca force piada e nunca brinque com assunto sério.",
+    "Fale como gente, não como manual: português do Brasil natural e fluido, coloquial na medida ('tá', 'pra', 'beleza' são bem-vindos). Frases completas, com ritmo de conversa.",
+    "Chame {usuario} pelo nome de vez em quando, não em toda resposta.",
+    "Vá direto ao ponto: nada de 'Claro!', 'Com certeza!', 'Ótima pergunta' nem repetir o pedido antes de responder.",
+    "Tenha opinião. Se ele perguntar o que você acha, diga o que acha e por quê, em poucas palavras.",
+    "Seja proativo sem ser chato: se notar algo útil (um risco, um jeito melhor, algo que ele esqueceu), mencione em uma frase.",
+    "Seja honesto: nunca invente. Se não sabe ou não conseguiu, diga isso e ofereça verificar."
+  ],
 
   "voz": {
     "nome": "pt-BR-AntonioNeural",
@@ -23,6 +35,13 @@
     "fala_minima_s": 0.3
   },
 
+  "transcricao": {
+    "motor": "auto",
+    "modelo": "small",
+    "gpu": "auto",
+    "reserva": true
+  },
+
   "conversa": {
     "janela_seguimento_s": 8,
     "max_caracteres_fala": 600,
@@ -32,13 +51,6 @@
   },
 
   "motor_padrao": "auto",
-
-  "estilo_resposta": [
-    "Use frases curtas, de 3 a 6 palavras.",
-    "Sem enrolação, introdução ou cumprimentos.",
-    "Execute as ferramentas primeiro, mostre o resultado, depois pare. Não narre.",
-    "Remova artigos (\"Eu corrigir código\" em vez de \"Eu vou corrigir o código\")."
-  ],
 
   "nemotron": {
     "url": "https://integrate.api.nvidia.com/v1",
@@ -77,15 +89,15 @@
     },
     "codex": {
       "ativo": true, "rotulo": "Codex", "apelidos": ["codex", "codecs", "chatgpt", "gpt"],
-      "comando": ["codex", "exec", "--skip-git-repo-check", "-c", "model_reasoning_effort=low", "-"], "timeout_s": 180,
+      "comando": ["codex", "exec", "--skip-git-repo-check", "-s", "workspace-write", "-c", "model_reasoning_effort=low", "-"], "timeout_s": 180,
       "login_arquivo": "~/.codex/auth.json", "login_contem": "tokens"
     }
   },
 
   "roteamento": {
-    "rapido": ["nemotron", "gemini", "claude"],
-    "inteligente": ["nvidia_pro", "gemini", "claude", "nemotron"],
-    "internet": ["gemini", "claude"],
+    "rapido": ["claude", "nemotron", "gemini"],
+    "inteligente": ["claude", "nvidia_pro", "gemini", "nemotron"],
+    "internet": ["claude", "gemini"],
     "pc": ["claude", "codex", "gemini"]
   },
 

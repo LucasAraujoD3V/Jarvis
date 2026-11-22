@@ -14,20 +14,35 @@ Desde 20/11/2026 também usa **Gemini CLI** (conta Google) e **Codex CLI** (cont
 ensina por voz** e escolhe a IA pelo tipo de pedido. **Regra: nenhuma API paga** — só contas já logadas por linha de
 comando ou coisas grátis (API grátis da NVIDIA).
 
+**Reforma de 22/11/2026** (o Lucas achou que ele "não escuta direito, não tem personalidade, é limitado e o Nemotron é
+fraco"):
+- **Personalidade:** `config.json → persona` (calmo, leal, humor seco, fala natural, chama o Lucas pelo nome, tem
+  opinião, não inventa). Saiu o `estilo_resposta` — eram as 4 regras de economia de token do chat do Claude Code
+  ("frases de 3 a 6 palavras, sem artigos") que tinham ido parar no prompt de TODAS as IAs e deixavam a fala robótica.
+- **Claude primeiro em tudo**, num **processo que fica aberto** (`stream-json`): a resposta chega em pedaços e o Jarvis
+  **fala frase a frase enquanto o Claude ainda escreve**. Nemotron/Kimi/Gemini/Codex viraram reserva.
+- **Escuta:** Whisper local (faster-whisper). Com placa NVIDIA funcionando é o principal; sem ela o Google segue
+  principal e o Whisper transcreve quando o Google não entende (antes a frase se perdia). Ver "Transcrição".
+- Hora e data respondidas na hora, sem IA. Voz: cache das frases curtas e corte do silêncio que o Edge põe nas pontas
+  ("Sim?" tinha 1,9 s de áudio, agora 0,4 s). `edge-tts` ≥ 7.3.1 (a 7.2.8 leva 403 da Microsoft e cai na voz do Windows).
+
 **Spider ("aranha")** = `Data\Spider`: painel-teia com todas as contas de IA, nuvem e VPS do Lucas (Nemotron no centro,
 roda na VPS 1 em `http://100.119.108.26:3060` com o Tailscale). Ainda não está ligado ao Jarvis (ideia: o Jarvis
 perguntar ao Spider qual conta usar, e o Spider mostrar as IAs do Jarvis na teia).
 
-## Pendências (20/11/2026)
-1. **Login do Gemini** (o Lucas faz): no terminal, `& "$HOME\.local\npm\gemini.cmd"` → Trust folder → Login with Google.
-   Depois do login o Gemini entra na fila sozinho (o Jarvis confere `~/.gemini/settings.json` a cada 30 s).
-   Falta medir a latência dele (papo e busca na web) e confirmar se fica em 1º na fila `internet`.
-2. **Chave NVIDIA nova** (o Lucas cria em build.nvidia.com e cola no painel). Depois:
-   `python ferramentas/comparar_modelos.py` (7 modelos, 3 perguntas de raciocínio, ≤ 60 s cada) → pôr o vencedor em
-   `nvidia_pro.modelo`/`rotulo`/`apelidos` no config.json. Até lá `nvidia_pro` aponta para `moonshotai/kimi-k3.1-pro` (palpite).
-3. **Ollama: não instalado (decisão).** GPU GTX 1650 de 4 GB só roda modelo de ~3–4B, mais fraco e mais lento que o
-   Nemotron grátis, e sem internet o Jarvis já não transcreve a voz — ganho pequeno para baixar ~2,6 GB.
-4. Calibrar o microfone com a voz real (ver "Calibração do limiar" em Limitações).
+## Pendências (22/11/2026)
+1. **Atualizar o PC fixo** (onde o Jarvis roda; o código está no GitHub `LucasAraujoD3V/Jarvis`), num terminal normal
+   (não de dentro do app do Claude — ver "Instalação das CLIs"):
+   `git pull` na pasta do Jarvis → `pip install -U -r requirements.txt` (traz faster-whisper e edge-tts novo) →
+   reiniciar o Jarvis pela bandeja. Na 1ª vez ele baixa o Whisper "small" (~480 MB) e testa a placa de vídeo.
+2. **GPU para o Whisper (opcional, recomendado):** `pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"` (~1,5 GB) e
+   apagar `whisper_cuda` do `preferencias.json` para ele testar de novo. Sem isso o Whisper roda na CPU só como reserva.
+3. **Conferir o login do Claude Code no PC fixo** (`claude` no terminal; se pedir, `/login`). Sem login o Jarvis avisa
+   "Claude sem login" e responde pelas reservas. No notebook (22/11) o login estava vencido.
+4. Testar pela voz de verdade no PC fixo: escuta (Whisper/Google), streaming do Claude, personalidade. Ainda não feito.
+5. **Login do Gemini** e **chave NVIDIA nova** viraram opcionais (só reserva). Gemini: `& "$HOME\.local\npm\gemini.cmd"`
+   → Login with Google. NVIDIA: build.nvidia.com → colar no painel → `python ferramentas/comparar_modelos.py`.
+6. **Ollama: não instalado (decisão).** GPU GTX 1650 de 4 GB só roda modelo de ~3–4B, mais fraco que o Claude.
 
 ## Como usar
 
@@ -36,7 +51,8 @@ perguntar ao Spider qual conta usar, e o Spider mostrar as IAs do Jarvis na teia
   - Depois de cada resposta há uma **janela de 8 s** para continuar a conversa sem repetir o nome.
   - O nome pode vir no fim: "que horas são, Jarvis?".
 - **Comandos de voz locais** (frase exata, sem IA): "cancela"/"para de falar", "obrigado" (encerra), "nova conversa",
-  "usa o Claude" / "usa o Gemini" / "usa o Codex" / "usa o Kimi" / "usa o Nemotron" / "modo automático", "desliga", "reinicia".
+  "usa o Claude" / "usa o Gemini" / "usa o Codex" / "usa o Kimi" / "usa o Nemotron" / "modo automático", "desliga", "reinicia",
+  "que horas são" / "que dia é hoje" (respondidos na hora).
 - **Ensinar (memória persistente)** — resolvido pelo próprio Jarvis, sem IA:
   - "Jarvis, **lembra que** eu acordo às 6" / "**aprende que** meu carro é um Civic" / "**anota aí:** …" → "Anotado."
   - "Jarvis, **esquece que** eu gosto de café" / "esquece o que eu falei sobre o carro" / "apaga da memória o café"
@@ -65,13 +81,18 @@ jarvis.pyw            entrada (pythonw sem console; redireciona stdout/stderr nu
 jarvis/app.py         liga tudo: Qt, instância única (QLocalServer "JarvisAssistente-<usuario>"), mensagens --pedir/--falar,
                       reinício (sobe processo novo com --reiniciado e encerra), autostart na 1ª execução, --demo
 jarvis/assistente.py  núcleo: estados, palavra de ativação, janela de seguimento, comandos locais, fila do "cérebro",
-                      escolha do motor, fallback entre motores, prévia falada quando a IA é lenta, sinais Qt para a interface
-jarvis/motores.py     MotorNemotron (HTTP NVIDIA: lightning e "pro"), MotorClaude (`claude -p`), MotorCLI (Gemini/Codex CLI)
+                      escolha do motor, fallback entre motores, FalaEmFluxo (fala enquanto o Claude escreve), sinais Qt
+jarvis/motores.py     persona/regras_voz, MotorNemotron (HTTP NVIDIA), MotorClaude (processo fixo stream-json),
+                      MotorCLI (Gemini/Codex CLI)
 jarvis/memoria.py     Memoria (fatos ensinados → memoria.json) e Conversa (últimas trocas de qualquer IA → conversa.json)
 ferramentas/comparar_modelos.py   compara modelos da API grátis da NVIDIA (acertos × latência, ≤ 60 s por modelo)
-jarvis/voz.py         Ouvinte (microfone 30 ms → detector de fala com limiar adaptativo → Google STT pt-BR)
-                      Falante (Edge TTS em memória → miniaudio → sounddevice, mede volume p/ animação; fallback SAPI)
-jarvis/texto.py       regras puras e testadas: palavra de ativação, comandos locais, roteamento, limpeza de markdown
+jarvis/voz.py         Ouvinte (microfone 30 ms → detector de fala com limiar adaptativo → stt.Transcritor)
+                      Falante (Edge TTS em memória → miniaudio → corta silêncio → sounddevice; cache de frases curtas;
+                      falar_fila = fala trechos conforme chegam; fallback SAPI)
+jarvis/stt.py         Transcritor: Whisper local (faster-whisper, GPU ou CPU) e Google, um como reserva do outro;
+                      normaliza volume, filtra alucinação do Whisper, testa a GPU num processo separado
+jarvis/texto.py       regras puras e testadas: palavra de ativação, comandos locais (hora/data), roteamento,
+                      limpeza de markdown, DivisorFala (resposta em pedaços → frases para falar)
 jarvis/reator.py      desenho do reator (QPainter): marcações, arcos, anel tracejado, cometa, barras radiais, núcleo
 jarvis/hud.py         popup translúcido, sempre por cima, sem roubar foco, fade in/out, legenda
 jarvis/painel.py      janela de controle (fechar = esconder)
@@ -87,27 +108,45 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
 
 ### Fluxo de um pedido
 1. Microfone contínuo; fala detectada por energia (limiar = 20º percentil do ruído × 2,6, mínimo 20) → frase termina com 0,9 s de silêncio.
-2. Google Speech (pt-BR, grátis) transcreve. Sem "Jarvis" e fora da janela de seguimento → ignora.
+2. `stt.Transcritor` transcreve (ver "Transcrição"). Sem "Jarvis" e fora da janela de seguimento → ignora.
 3. `comando_local` (frase exata) ou IA. Microfone fica **mudo enquanto ele fala** (não ouve a própria voz).
 4. Memória ("lembra que…", "esquece…", "o que você sabe de mim") é resolvida antes de tudo (`texto.comando_memoria`).
 5. Roteamento (`texto.rotear`): "pergunta pro X ..." manda direto; modo fixo; **automático** = 4 tipos de pedido, cada um
-   com uma **fila** de IAs (config.json → `roteamento`; a 1ª disponível responde, se falhar tenta a próxima):
+   com uma **fila** de IAs (config.json → `roteamento`; a 1ª disponível responde, se falhar tenta a próxima).
+   **Desde 22/11/2026 o Claude é o 1º em todos** (personalidade, ferramentas e internet); o tipo só decide a reserva:
 
-   | Tipo | Exemplos | Fila | Por quê |
+   | Tipo | Exemplos | Fila | Reserva serve para |
    |---|---|---|---|
-   | `pc` | abre, cria, arquivo, pasta, git, projeto, Kairos, Mesa | Claude → Codex → Gemini | só o Claude Code mexe no PC de verdade (permissão `auto`); Codex roda em sandbox só-leitura |
-   | `internet` | pesquisa, notícia, clima, cotação, dólar, "quem ganhou" | Gemini → Claude | Gemini CLI tem a busca do Google embutida e poupa o limite do Claude |
-   | `inteligente` | compara, analisa, calcula, planeja, "pensa bem", pedido > 30 palavras | Kimi (nvidia_pro) → Gemini → Claude → Nemotron | o modelo grátis que mais acertou o teste de raciocínio |
-   | `rapido` | papo, comentário, curiosidade, conta simples, "que horas são" | Nemotron lightning → Gemini → Claude | ~0,5 s; voz precisa de resposta rápida |
+   | `pc` | abre, cria, arquivo, pasta, git, projeto, Kairos, Mesa | Claude → Codex → Gemini | Codex pode escrever na pasta Data (`-s workspace-write`) |
+   | `internet` | pesquisa, notícia, clima, cotação, dólar, "quem ganhou" | Claude → Gemini | Gemini CLI tem a busca do Google embutida |
+   | `inteligente` | compara, analisa, calcula, planeja, "pensa bem", pedido > 30 palavras | Claude → Kimi → Gemini → Nemotron | Kimi = o grátis que mais acertou raciocínio |
+   | `rapido` | papo, comentário, curiosidade, conta simples | Claude → Nemotron → Gemini | Nemotron ~0,5 s (precisa da chave NVIDIA) |
 
    Verbo de ação ("abre", "pesquisa") ou assunto do dia ("clima") manda; substantivo solto ("servidor", "site", "código")
    só decide se não for pergunta difícil ("compara Python e Rust para um servidor web" → inteligente).
    Se um modelo da NVIDIA (sem internet) perceber que precisa de internet/PC, responde `ENCAMINHAR` e o Jarvis repassa à
    próxima IA com ferramentas (Claude/Gemini/Codex). CLI sem login sai da fila por 10 min (não atrasa todo pedido).
-6. IA lenta em pedido que não é papo: o Jarvis fala uma prévia ("Pesquisando.", "Abrindo.") enquanto espera.
-   Papo rápido não ganha prévia (ficava "Um momento… Pois é.").
-7. Resposta → tira markdown/emojis/links → corta em ~600 caracteres no fim de frase ("O resto está no painel.") → fala em trechos
-   (sintetiza o próximo enquanto toca o atual). A troca vai para `conversa.json`.
+6. **Claude (streaming):** cada pedaço de texto vai para `FalaEmFluxo` → `DivisorFala` solta a 1ª frase assim que ela
+   termina → `Falante.falar_fila` sintetiza e fala enquanto o resto chega. A 1ª frase fica segura até se saber que não
+   é `IGNORAR`. Se o Claude for usar ferramenta sem ter dito nada, fala a prévia ("Abrindo."). Se cair no meio depois de
+   já ter falado, diz "Perdi a conexão no meio da resposta" (outra IA repetiria do zero).
+   **Outras IAs (sem streaming):** IA lenta em pedido que não é papo ganha a prévia falada enquanto espera.
+7. Resposta → tira markdown/emojis/links → corta em ~600 caracteres no fim de frase ("O resto está no painel.").
+   A troca vai para `conversa.json`.
+
+### Transcrição (22/11/2026) — `config.json → transcricao`
+- `motor: "auto"`: testa a placa NVIDIA **num processo separado** (falta de DLL do CUDA pode derrubar o processo) e
+  guarda o resultado em `preferencias.json → whisper_cuda` (refaz se o ctranslate2 mudar). GPU ok → **Whisper "small"
+  na GPU é o principal**. Sem GPU → **Google principal + Whisper na CPU como reserva** (quando o Google não entende ou
+  está sem internet). `motor: "whisper"`/`"google"` força um deles; `gpu: "nao"` nunca usa a placa; `reserva: false`
+  desliga a reserva; `modelo: "base"` é ~3× mais rápido na CPU e erra bem mais.
+- Medido no notebook i7-1360P (sem NVIDIA), int8: "small" 5,4 s por frase (3,9 s com 8 threads — o padrão agora),
+  "base" 1,5–2 s. "small" acertou "Jarvis, que horas são?" e "Mesa Traders" até com voz em rms ~25 + chiado (o nível do
+  microfone do PC fixo); "base" errou o nome. Na GTX 1650 (CUDA) a expectativa é < 1 s — **não medido ainda**.
+- Normaliza o volume antes de transcrever (pico 0,6, ganho até 400×). Com voz sintética limpa o Google já acertava baixo
+  mesmo sem isso — o problema do microfone real deve ser qualidade (eco/distância), por isso o Whisper.
+- Filtra alucinações típicas do Whisper em silêncio ("Legendas pela comunidade Amara.org", "Obrigado por assistir"…) e
+  usa `hotwords="Jarvis"`. Ruído puro → nada (testado).
 
 ### Memória e continuidade (20/11/2026)
 - **Fatos ensinados** (`memoria.json`, gitignorado — é pessoal): vão no prompt de **todas** as IAs (Nemotron/Kimi no
@@ -125,10 +164,10 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
 | Motor | Como | Latência medida (18/11/2026) | Observações |
 |---|---|---|---|
 | Nemotron | `POST https://integrate.api.nvidia.com/v1/chat/completions`, modelo `nvidia/nemotron-3.5-lightning-30b-a3b`, `chat_template_kwargs.enable_thinking=false` | ~0,5 s | Sem internet/PC. Histórico de 10 turnos. Normaliza respostas EM MAIÚSCULAS. |
-| Claude | `claude -p <texto> --output-format json --permission-mode auto --model sonnet --strict-mcp-config --append-system-prompt <regras de voz>` na pasta `Data` | 5–6 s simples; 15–25 s com ferramenta/web | Conta logada. `--resume <session_id>` mantém a conversa. Cancelar mata a árvore de processos (`taskkill /T`). `--strict-mcp-config` corta o contexto de ~52k para ~14k tokens. |
+| Claude | **Processo fixo** (22/11): `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode auto --model sonnet --strict-mcp-config --append-system-prompt <persona + regras de ação + memória> [--resume <sessão>]` na pasta `Data`. Cada pedido = 1 linha JSON `{"type":"user","message":{...}}`; hora, memória nova e trocas de outras IAs vão na mensagem | antes: 5–6 s simples (abria processo novo a cada pedido); agora a partida é paga uma vez (aquecido ao ligar) e a fala começa na 1ª frase — **não medido com Claude real** (login vencido no notebook) | Conta logada (assinatura). Cancelar mata a árvore (`taskkill /T`) e o próximo pedido sobe outro com `--resume`. Sessão que sumiu → começa outra. "OAuth expired"/sem login → sai da fila por 5 min e avisa. `--strict-mcp-config` corta o contexto de ~52k para ~14k tokens. |
 | Kimi (`nvidia_pro`) | mesma API da NVIDIA, modelo do config `nvidia_pro.modelo` (escolhido no teste de raciocínio) | — (medir com a chave) | Perguntas difíceis. Mesma chave do Nemotron. Sem internet/PC (ENCAMINHAR). |
 | Gemini | `gemini -o json -p " "` com o pedido no **stdin** (Gemini CLI 0.70, conta Google logada) | — (medir após login) | Busca do Google embutida. Sem aprovação no modo headless: só lê/pesquisa, não altera arquivos. |
-| Codex | `codex exec --skip-git-repo-check -c model_reasoning_effort=low -` com o pedido no stdin (Codex CLI 0.171, conta ChatGPT já logada em `~/.codex`) | 4,8–6,2 s ("responda só: ok"); 14,9 s contando arquivos de uma pasta pelo Jarvis (acertou: 14) | Sandbox só-leitura, aprovação "never": lê arquivos, não altera. Reserva para pedidos de PC. |
+| Codex | `codex exec --skip-git-repo-check -s workspace-write -c model_reasoning_effort=low -` com o pedido no stdin (Codex CLI 0.171, conta ChatGPT já logada em `~/.codex`) | 4,8–6,2 s ("responda só: ok"); 14,9 s contando arquivos; 8 s respondendo papo como reserva do Claude (22/11, já com a persona: "Oi, Lucas. Tá aqui.") | Desde 22/11 pode escrever na pasta Data (`workspace-write`), aprovação "never". Reserva para pedidos de PC. |
 
 **Instalação das CLIs (atenção):** o app do Claude no Windows é um pacote MSIX; um `npm install -g` rodado de dentro
 dele cai numa pasta `AppData` **virtual** que o resto do Windows não vê (o Jarvis e o terminal não achavam o `gemini`).
@@ -137,19 +176,24 @@ e o Jarvis procura lá (`motores.achar_cli`). Essa pasta **não está no PATH**:
 O mesmo vale para `pip install` feito de dentro do app: rode no terminal normal.
 
 - Modo de permissão do Claude = `auto` (classificador bloqueia ação arriscada; o prompt também manda não fazer nada irreversível sem confirmar).
-- Conversa nova automática depois de 15 min sem uso.
-- Estilo das respostas = `estilo_resposta` do config.json (as 4 regras de economia: frases curtas, sem enrolação, sem narrar, sem artigos).
+- Quem ele é = `persona` do config.json (vale para todas as IAs). O Claude ainda recebe `REGRAS_ACAO` (motores.py): fazer
+  em vez de explicar, dizer o que vai fazer antes de tarefa demorada, abrir coisas com `Start-Process`, nada irreversível sem sim.
+- **Não pôr regras de economia de token do chat (frases de 3–6 palavras, sem artigos) no Jarvis**: valem só para o
+  Claude Code no chat com o Lucas. No Jarvis deixavam a fala robótica (corrigido em 22/11).
 
 ## Configuração
 
 - **Todas as credenciais estão no `Cofre.md` na raiz da pasta `Data`, fora do versionamento e nunca postado no git.**
   `.env.example` mostra as variáveis que o projeto precisa (só `NVIDIA_API_KEY`).
-- `config.json` (versionado): nome, palavras de ativação (variações que o reconhecimento costuma errar: jarbas, javis...),
-  voz (`pt-BR-AntonioNeural`, +8%, -4Hz), microfone, janela de seguimento, motores, estilo, popup.
+- `config.json` (versionado): nome, `usuario` ("Lucas"), palavras de ativação (variações que o reconhecimento costuma
+  errar: jarbas, javis...), `saudacao`/`respostas_ativacao` (listas sorteadas; aceitam `{usuario}` e `{periodo}` =
+  Bom dia/Boa tarde/Boa noite), `persona`, voz (`pt-BR-AntonioNeural`, +8%, -4Hz), microfone, `transcricao`, janela de
+  seguimento, motores, roteamento, popup.
 - `.env` (gitignorado): `NVIDIA_API_KEY` — conta **nova** do Nemotron, só do Jarvis (separada da Mesa-Traders). **Pendente.**
   Sem ela o modo automático manda tudo para o Claude (funciona, mas é mais lento e gasta o limite do plano).
 - `preferencias.json` (gitignorado): motor escolhido, popup ligado, posição do popup, se o autostart já foi definido,
-  `claude_sessao` (sessão do Claude retomada com `--resume`), `microfone` escolhido sozinho.
+  `claude_sessao` (sessão do Claude retomada com `--resume`), `microfone` escolhido sozinho, `whisper_cuda` (resultado
+  do teste da placa de vídeo; apague para testar de novo).
 - `memoria.json` / `memoria.bak.json` / `conversa.json` (gitignorados, pessoais): memória ensinada e conversa recente.
 - Logins das CLIs ficam nas pastas delas, fora do projeto: Gemini em `~/.gemini` (conta Google), Codex em `~/.codex`
   (conta ChatGPT), Claude em `~/.claude`. O Jarvis não guarda nenhuma dessas credenciais.
@@ -160,8 +204,9 @@ O mesmo vale para `pip install` feito de dentro do app: rode no terminal normal.
   para os arquivos estarem sempre locais na hora do boot.
 
 ## Limitações conhecidas
-- Precisa de internet para transcrever (Google) e para a voz neural (Edge). Sem internet a voz cai na do Windows (SAPI),
-  mas a transcrição para.
+- Voz neural (Edge) precisa de internet e leva ~1,4–2 s por frase nova (rede); frases curtas repetidas saem do cache na
+  hora. Sem internet cai na voz do Windows (SAPI). **edge-tts antigo (7.2.8) leva HTTP 403** e também cai no SAPI:
+  manter `edge-tts>=7.3.1`. Sem internet a transcrição segue pelo Whisper (se instalado).
 - Não dá para interromper por voz enquanto ele fala (microfone mudo para não ouvir a si mesmo): clique no popup ou "Calar".
 - O nome do microfone vem cortado em 31 caracteres (limite do driver MME).
 - **Microfone deste PC (20/11/2026):** o "Microfone (High Definition Audio)" FUNCIONA, mas em silêncio dá rms ~0,5 —
@@ -186,8 +231,17 @@ O mesmo vale para `pip install` feito de dentro do app: rode no terminal normal.
 - No Windows 11 o ícone novo da bandeja nasce escondido em "^": arraste para a barra uma vez.
 
 ## Testes
-- `python -m unittest discover -s tests -v` — 56 testes (ativação, comandos locais, roteamento por tipo, memória e
-  conversa em disco, memória chegando no prompt de cada IA, CLI pelo stdin e só com login, limpeza de fala, motor Nemotron sem rede).
+- `python -m unittest discover -s tests -v` — 90 testes (ativação, comandos locais, hora/data, roteamento com Claude
+  primeiro, memória e conversa em disco, memória no prompt de cada IA, CLI pelo stdin e só com login, limpeza de fala,
+  DivisorFala, motor Nemotron sem rede, **MotorClaude em processo fixo** com um Claude falso (`tests/claude_falso.py`,
+  imita o stream-json real: streaming, sessão, retomada, sem login, processo morrendo, cancelar), transcrição
+  (normalização, alucinação, reserva Google↔Whisper), fala em fila/fluxo, corte de silêncio). 3 testes precisam do PySide6.
+- Integração (22/11/2026, notebook, Assistente real + Edge TTS real + Claude falso, alto-falante mudo): papo em
+  streaming falou "Oi, Lucas." e depois "Tudo certo por aqui."; "que horas são" respondido sem IA; ferramenta → "Abrindo." +
+  resultado; fala que não era para ele → quieto; Claude sem login → Codex respondeu em 8 s. Transcritor real: sonda da GPU
+  recusou "sem placa NVIDIA" em 0,5 s sem travar; voz fraca transcrita certa em 0,7–1,0 s; ruído → nada.
+- **Não testado ainda (22/11):** Claude de verdade em streaming (login vencido no notebook), Whisper na GTX 1650, voz
+  real do Lucas no microfone do PC fixo.
 - Teste de janela de seguimento (20/11/2026, `--ouvir`): "Jarvis, quanto é 7 vezes 8?" → "Cinquenta e seis." → em 1 s,
   sem o nome, "Ô Maria, pega o carregador pra mim lá na sala" → **ignorado** (IGNORAR); "Jarvis, qual a capital da
   Austrália?" → "Canberra." → "agora sim hein" → "Pois é." (antes respondia "Não entendi o pedido…").

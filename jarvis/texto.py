@@ -85,7 +85,30 @@ COMANDOS_LOCAIS: dict[str, set[str]] = {
     "motor:auto": {"modo automatico", "usa o automatico", "motor automatico", "volta pro automatico", "modo auto"},
     "desligar": {"desliga", "desligar", "desligue", "se desliga", "vai dormir", "dormir", "desativar", "desativa", "desliga o microfone"},
     "reiniciar": {"reinicia", "reiniciar", "reinicie", "se reinicia", "reinicia o assistente"},
+    # respondidos na hora, sem IA (a IA levaria ~2 s para dizer a hora)
+    "hora": {"que horas sao", "que hora e", "que horas e", "que horas", "me diz as horas", "fala as horas", "horas",
+             "que horas tem", "tem horas", "me fala as horas", "sabe que horas sao", "voce sabe que horas sao"},
+    "data": {"que dia e hoje", "que dia hoje", "qual a data de hoje", "qual e a data de hoje", "que data e hoje",
+             "hoje e que dia", "qual o dia de hoje", "dia de hoje"},
 }
+
+MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro",
+         "novembro", "dezembro"]
+DIAS_SEMANA = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+
+
+def hora_falada(h: int, m: int) -> str:
+    """'São 14:05.' / 'É 01:30.' / 'É meio-dia.' — a voz neural lê HH:MM como hora."""
+    if (h, m) == (12, 0):
+        return "É meio-dia."
+    if (h, m) == (0, 0):
+        return "É meia-noite."
+    return f"{'É' if h in (0, 1) else 'São'} {h:02d}:{m:02d}."
+
+
+def data_falada(dia_semana: int, dia: int, mes: int) -> str:
+    """'Hoje é sábado, 22 de novembro.' (dia_semana 0 = segunda, mes 1..12)"""
+    return f"Hoje é {DIAS_SEMANA[dia_semana]}, {dia} de {MESES[mes - 1]}."
 
 _CORTESIA = re.compile(r"\b(por favor|porfavor|agora|ai|ja|entao)\b")
 
@@ -173,11 +196,14 @@ def comando_memoria(texto: str) -> tuple[str, str] | None:
 
 # --------------------------------------------------------------------------------------------- roteamento de IA
 # O modo automático separa o pedido em 4 tipos e cada tipo tem uma fila de IAs (a 1ª disponível responde; se falhar,
-# tenta a próxima). As filas ficam em config.json → roteamento (ROTAS_PADRAO é o padrão):
-#   pc          mexer no computador (abrir, criar, arquivo, git, projeto...) → Claude Code (tem ferramentas de verdade)
-#   internet    pesquisa, notícia, clima, cotação → Gemini CLI (busca do Google embutida; poupa o limite do Claude)
-#   inteligente raciocínio pesado (comparar, analisar, calcular, planejar, pedido longo) → o modelo mais inteligente grátis
-#   rapido      papo, comentário, curiosidade, conta simples → o modelo mais rápido (Nemotron lightning, ~0,5 s)
+# tenta a próxima). As filas ficam em config.json → roteamento (ROTAS_PADRAO é o padrão).
+# Desde 22/11/2026 o Claude Code (assinatura, processo fixo, fala enquanto gera) vem PRIMEIRO em todos os tipos: é o
+# único com personalidade boa, ferramentas de verdade no PC e internet. Os outros ficam de reserva (Claude sem login,
+# limite do plano estourado, fora do ar):
+#   pc          mexer no computador (abrir, criar, arquivo, git, projeto...) → Claude → Codex (pode escrever na pasta Data)
+#   internet    pesquisa, notícia, clima, cotação → Claude (busca na web) → Gemini CLI
+#   inteligente raciocínio pesado (comparar, analisar, calcular, planejar, pedido longo) → Claude → Kimi (NVIDIA grátis)
+#   rapido      papo, comentário, curiosidade, conta simples → Claude → Nemotron lightning
 RADICAIS_PC = (
     "abr", "cri", "arquiv", "past", "projet", "codig", "program", "script", "rod", "execut", "instal", "commit",
     "edit", "corrig", "consert", "deploy", "servidor", "planilh", "document", "email", "mand", "envi", "baix",
@@ -207,9 +233,9 @@ FRASES_DIFICIL = (
 )
 PALAVRAS_PEDIDO_LONGO = 30  # pedido falado com mais de 30 palavras costuma ser complexo
 ROTAS_PADRAO: dict[str, list[str]] = {
-    "rapido": ["nemotron", "gemini", "claude"],
-    "inteligente": ["nvidia_pro", "gemini", "claude", "nemotron"],
-    "internet": ["gemini", "claude"],
+    "rapido": ["claude", "nemotron", "gemini"],
+    "inteligente": ["claude", "nvidia_pro", "gemini", "nemotron"],
+    "internet": ["claude", "gemini"],
     "pc": ["claude", "codex", "gemini"],
 }
 # radicais curtos demais casariam palavras comuns: só valem como palavra inteira começando assim e com tamanho mínimo
@@ -390,6 +416,71 @@ def dividir_frases(texto: str, max_trecho: int = 220) -> list[str]:
     if atual:
         trechos.append(atual)
     return trechos
+
+
+_FIM_FRASE = re.compile(r"(?<=[.!?…])\s+|\n+")
+_SO_NUMERO = re.compile(r"\d+[.)]?")
+
+
+class DivisorFala:
+    """
+    Resposta chegando aos pedaços (IA em streaming) → trechos prontos para falar, já sem markdown.
+    A 1ª frase sai assim que termina, para a voz começar cedo; as seguintes saem frase a frase (agrupadas até
+    `agrupar` caracteres quando chegam juntas). Bloco de código (```) é pulado. Depois de `max_chars` falados para
+    de entregar e marca `cortado` (o resto fica no painel).
+    """
+
+    def __init__(self, max_chars: int = 600, agrupar: int = 170):
+        self.max_chars = max_chars
+        self.agrupar = agrupar
+        self._buf = ""
+        self._falados = 0
+        self._primeira = True
+        self.cortado = False
+
+    def alimentar(self, pedaco: str) -> list[str]:
+        self._buf += pedaco or ""
+        return self._extrair(final=False)
+
+    def terminar(self) -> list[str]:
+        return self._extrair(final=True)
+
+    def _extrair(self, final: bool) -> list[str]:
+        if self.cortado:
+            self._buf = ""
+            return []
+        self._buf = re.sub(r"```[\s\S]*?```", "\n", self._buf)  # bloco de código completo: não se fala
+        if "```" in self._buf:
+            if not final:
+                return []  # bloco de código ainda aberto: espera fechar
+            self._buf = self._buf.split("```", 1)[0]
+        partes = _FIM_FRASE.split(self._buf)
+        if final:
+            completas, self._buf = partes, ""
+        else:
+            completas, self._buf = partes[:-1], partes[-1]
+        saida: list[str] = []
+        grupo = ""
+        for p in completas:
+            f = limpar_markdown(p)
+            if not f or _SO_NUMERO.fullmatch(f):
+                continue
+            if self._falados and self._falados + len(f) > self.max_chars:
+                self.cortado = True
+                self._buf = ""
+                break
+            self._falados += len(f) + 1
+            if self._primeira:
+                self._primeira = False
+                saida.append(f)
+            elif grupo and len(grupo) + 1 + len(f) > self.agrupar:
+                saida.append(grupo)
+                grupo = f
+            else:
+                grupo = f"{grupo} {f}".strip()
+        if grupo:
+            saida.append(grupo)
+        return saida
 
 
 def limpar_para_fala(texto: str, max_chars: int = 600) -> tuple[str, bool]:

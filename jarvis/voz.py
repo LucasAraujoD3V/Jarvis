@@ -2,11 +2,12 @@
 Áudio do Jarvis.
 
 Ouvinte: microfone contínuo (blocos de 30 ms) → detector de fala por energia com limiar que se adapta ao ruído →
-cada frase vira um áudio → transcrição (Google, pt-BR) → callback com o texto. Fica MUDO enquanto o Jarvis fala,
-para não ouvir a própria voz.
+cada frase vira um áudio → transcrição (stt.Transcritor: Whisper local e/ou Google) → callback com o texto. Fica MUDO
+enquanto o Jarvis fala, para não ouvir a própria voz.
 
 Falante: Edge TTS (voz neural, precisa de internet) decodificado em memória e tocado pelo sounddevice, medindo o
 volume a cada instante — é isso que faz a animação "falar" no ritmo da voz. Sem internet, cai na voz do Windows (SAPI).
+`falar_fila` fala trechos que vão chegando (IA em streaming), sintetizando o próximo enquanto toca o atual.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from typing import Callable
 
 import numpy as np
 import sounddevice as sd
-import speech_recognition as sr
 
 from .texto import dividir_frases
 
@@ -40,6 +40,17 @@ def rms(a: np.ndarray) -> float:
     if a is None or len(a) == 0:
         return 0.0
     return float(np.sqrt(np.mean(a.astype(np.float32) ** 2)))
+
+
+def aparar_silencio(audio: np.ndarray, taxa: int, limiar: int = 200, margem_s: float = 0.08) -> np.ndarray:
+    """Tira o silêncio do começo e do fim (o Edge põe ~0,5 s em cada frase: 'Sim?' vinha com 1,9 s)."""
+    if len(audio) == 0:
+        return audio
+    alto = np.flatnonzero(np.abs(audio.astype(np.int32)) > limiar)
+    if len(alto) == 0:
+        return audio
+    m = int(taxa * margem_s)
+    return audio[max(0, alto[0] - m): min(len(audio), alto[-1] + m + 1)].copy()
 
 
 # ===================================================================================================== microfones
@@ -103,11 +114,11 @@ def escolher_microfone(sondas: list[dict], atual: str) -> dict | None:
 
 # ===================================================================================================== Ouvinte
 class Ouvinte:
-    def __init__(self, cfg_mic: dict, idioma: str, ao_texto: Callable[[str], None], ao_nivel: Callable[[float], None],
+    def __init__(self, cfg_mic: dict, transcritor, ao_texto: Callable[[str], None], ao_nivel: Callable[[float], None],
                  ao_aviso: Callable[[str], None], ao_sem_sinal: Callable[[bool], None] | None = None,
                  preferido: dict | None = None):
         self.cfg = cfg_mic
-        self.idioma = idioma
+        self.transcritor = transcritor  # stt.Transcritor (Whisper local e/ou Google)
         self.ao_texto = ao_texto
         self.ao_nivel = ao_nivel
         self.ao_aviso = ao_aviso
@@ -130,7 +141,6 @@ class Ouvinte:
         self._stream: sd.InputStream | None = None
         self._audio: queue.Queue = queue.Queue(maxsize=400)
         self._frases: queue.Queue = queue.Queue(maxsize=8)
-        self._rec = sr.Recognizer()
         self._threads: list[threading.Thread] = []
 
     # mudo enquanto o Jarvis fala (+ um respiro curto depois, para o eco do alto-falante morrer)
@@ -331,20 +341,16 @@ class Ouvinte:
                 continue
             if audio is None:
                 break
-            dados = sr.AudioData(audio.tobytes(), TAXA_MIC, 2)
+            t0 = time.monotonic()
             try:
-                texto = self._rec.recognize_google(dados, language=self.idioma)
-            except sr.UnknownValueError:
-                continue
-            except sr.RequestError as e:
-                self.ao_aviso(f"Transcrição indisponível (sem internet?): {e}")
-                continue
+                texto = self.transcritor.transcrever(audio)
             except Exception as e:  # noqa: BLE001
                 log.exception("Erro na transcrição")
                 self.ao_aviso(f"Erro na transcrição: {e}")
                 continue
             texto = (texto or "").strip()
             if texto:
+                log.debug("Transcrito em %.1f s: %s", time.monotonic() - t0, texto)
                 self.ao_texto(texto)
 
 
@@ -359,6 +365,20 @@ class Falante:
         self.ao_trecho = ao_trecho
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-tts")
         self.ultimo_motor = ""
+        # Frases curtas que se repetem ("Sim?", "Abrindo.") ficam guardadas: o Edge leva ~1–2 s por frase (rede).
+        self._cache: collections.OrderedDict[str, tuple[np.ndarray, int]] = collections.OrderedDict()
+        self._cache_max_chars = 40
+        self._cache_max_itens = 64
+
+    def preaquecer(self, frases: list[str]) -> None:
+        """Sintetiza já (thread à parte) as frases curtas que ele mais fala, para saírem sem espera."""
+        for f in frases:
+            if f and len(f) <= self._cache_max_chars and f not in self._cache:
+                try:
+                    self.sintetizar(f)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("Pré-aquecimento da voz falhou (%s): %s", f, e)
+                    return
 
     # ---------------------------------------------------------------- síntese
     async def _edge_mp3(self, texto: str) -> bytes:
@@ -374,11 +394,20 @@ class Falante:
     def _sintetizar_edge(self, texto: str) -> tuple[np.ndarray, int]:
         import miniaudio
 
-        mp3 = asyncio.run(self._edge_mp3(texto))
+        mp3 = b""
+        for tentativa in (1, 2):  # o servidor da Microsoft às vezes derruba a conexão ("closing transport")
+            try:
+                mp3 = asyncio.run(self._edge_mp3(texto))
+                break
+            except Exception as e:  # noqa: BLE001
+                if tentativa == 2 or "403" in str(e):  # 403 = edge-tts desatualizado: insistir não adianta
+                    raise
+                log.info("Edge TTS falhou (%s); tentando de novo", type(e).__name__)
+                time.sleep(0.4)
         if not mp3:
             raise RuntimeError("Edge TTS devolveu áudio vazio")
         dec = miniaudio.decode(mp3, output_format=miniaudio.SampleFormat.SIGNED16, nchannels=1, sample_rate=24000)
-        return np.frombuffer(dec.samples.tobytes(), dtype=np.int16).copy(), 24000
+        return aparar_silencio(np.frombuffer(dec.samples.tobytes(), dtype=np.int16), 24000), 24000
 
     def _sintetizar_sapi(self, texto: str) -> tuple[np.ndarray, int]:
         import pythoncom
@@ -413,9 +442,16 @@ class Falante:
             pythoncom.CoUninitialize()
 
     def sintetizar(self, texto: str) -> tuple[np.ndarray, int]:
+        if texto in self._cache:
+            self._cache.move_to_end(texto)
+            return self._cache[texto]
         try:
             a = self._sintetizar_edge(texto)
             self.ultimo_motor = "edge"
+            if len(texto) <= self._cache_max_chars:  # só a voz neural vai para o cache (a do Windows é instantânea)
+                self._cache[texto] = a
+                while len(self._cache) > self._cache_max_itens:
+                    self._cache.popitem(last=False)
             return a
         except Exception as e:  # noqa: BLE001
             log.warning("Edge TTS falhou (%s); usando a voz do Windows", e)
@@ -447,21 +483,50 @@ class Falante:
 
     def falar(self, texto: str, cancelar: threading.Event) -> None:
         """Fala o texto inteiro (bloqueia). Sintetiza o próximo trecho enquanto toca o atual."""
-        trechos = dividir_frases(texto, 170)  # ~4 linhas no popup
-        if not trechos:
-            return
-        futuro = self._pool.submit(self.sintetizar, trechos[0])
-        for i, trecho in enumerate(trechos):
+        fila: queue.Queue = queue.Queue()
+        for trecho in dividir_frases(texto, 170):  # ~4 linhas no popup
+            fila.put(trecho)
+        fila.put(None)
+        self.falar_fila(fila, cancelar)
+
+    def falar_fila(self, fila: queue.Queue, cancelar: threading.Event) -> bool:
+        """Fala os trechos da fila conforme chegam (None = acabou). Enquanto um toca, o próximo que já chegou é
+        sintetizado. Devolve True se falou alguma coisa."""
+        vazio = object()
+
+        def pegar():
+            while not cancelar.is_set():
+                try:
+                    return fila.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+            return None
+
+        atual = pegar()
+        futuro = self._pool.submit(self.sintetizar, atual) if atual is not None else None
+        falou = False
+        while atual is not None:
             try:
                 audio, taxa = futuro.result(timeout=30)
             except Exception as e:  # noqa: BLE001
                 log.error("Não consegui sintetizar a fala: %s", e)
-                return
-            if i + 1 < len(trechos):
-                futuro = self._pool.submit(self.sintetizar, trechos[i + 1])
+                audio, taxa = None, 0
+            proximo, prox_futuro = vazio, None
+            try:  # o próximo trecho já chegou? começa a sintetizar enquanto este toca
+                proximo = fila.get_nowait()
+                prox_futuro = self._pool.submit(self.sintetizar, proximo) if proximo is not None else None
+            except queue.Empty:
+                pass
             if cancelar.is_set():
-                return
-            self.ao_trecho(trecho)
-            self._tocar(audio, taxa, cancelar)
+                return falou
+            if audio is not None:
+                self.ao_trecho(atual)
+                self._tocar(audio, taxa, cancelar)
+                falou = True
             if cancelar.is_set():
-                return
+                return falou
+            if proximo is vazio:
+                proximo = pegar()
+                prox_futuro = self._pool.submit(self.sintetizar, proximo) if proximo is not None else None
+            atual, futuro = proximo, prox_futuro
+        return falou

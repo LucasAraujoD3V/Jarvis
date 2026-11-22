@@ -9,8 +9,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from jarvis.texto import (  # noqa: E402
-    categoria, comando_local, dividir_frases, escolher_motor, extrair_comando, limpar_para_fala, parece_acao,
-    pedido_de_motor, rotear,
+    DivisorFala, categoria, comando_local, data_falada, dividir_frases, escolher_motor, extrair_comando, hora_falada,
+    limpar_para_fala, parece_acao, pedido_de_motor, rotear,
 )
 
 CHAVES = ["jarvis", "jarbas", "javis"]
@@ -63,9 +63,13 @@ class TestRoteamento(unittest.TestCase):
                          ("claude", "qual o status da VPS"))
         self.assertEqual(escolher_motor("Nemotron, conta uma piada", "auto", TODOS), ("nemotron", "conta uma piada"))
 
-    def test_auto_conversa_vai_pro_nemotron(self):
-        self.assertEqual(escolher_motor("quanto é 12 vezes 8", "auto", TODOS)[0], "nemotron")
-        self.assertEqual(escolher_motor("me explica o que é inflação", "auto", TODOS)[0], "nemotron")
+    def test_auto_conversa_vai_pro_claude(self):
+        # desde 22/11/2026 o Claude responde tudo; o Nemotron é reserva
+        self.assertEqual(escolher_motor("quanto é 12 vezes 8", "auto", TODOS)[0], "claude")
+        self.assertEqual(escolher_motor("me explica o que é inflação", "auto", TODOS)[0], "claude")
+
+    def test_sem_claude_conversa_cai_no_nemotron(self):
+        self.assertEqual(escolher_motor("me explica o que é inflação", "auto", {"nemotron"})[0], "nemotron")
 
     def test_auto_acao_vai_pro_claude(self):
         for t in ("abre o projeto Mesa Traders", "pesquisa o preço do bitcoin", "cria um arquivo de notas",
@@ -95,7 +99,7 @@ EXTRAS = ["nvidia_pro", "gemini", "codex"]
 
 
 class TestRoteamentoNovo(unittest.TestCase):
-    """Papo → rápido; difícil → o mais inteligente; internet → Gemini; PC → Claude."""
+    """Claude primeiro em tudo; a reserva depende do tipo: papo → Nemotron; difícil → Kimi; internet → Gemini; PC → Codex."""
 
     def fila(self, texto, disp=TUDO, **kw):
         return rotear(texto, "auto", disp, EXTRAS, **kw)
@@ -111,18 +115,19 @@ class TestRoteamentoNovo(unittest.TestCase):
         self.assertEqual(categoria("cria um arquivo de notas"), "pc")
 
     def test_filas(self):
-        self.assertEqual(self.fila("agora sim hein")[0][0], "nemotron")
-        self.assertEqual(self.fila("compara Python e Rust")[0][0], "nvidia_pro")
-        self.assertEqual(self.fila("como está o tempo hoje")[0][0], "gemini")
-        self.assertEqual(self.fila("abre o projeto Kairos")[0][0], "claude")
+        self.assertEqual(self.fila("agora sim hein")[0][:2], ["claude", "nemotron"])
+        self.assertEqual(self.fila("compara Python e Rust")[0][:2], ["claude", "nvidia_pro"])
+        self.assertEqual(self.fila("como está o tempo hoje")[0][:2], ["claude", "gemini"])
+        self.assertEqual(self.fila("abre o projeto Kairos")[0][:2], ["claude", "codex"])
 
     def test_fila_tem_reserva_sem_repetir(self):
         fila = self.fila("agora sim hein")[0]
         self.assertEqual(len(fila), len(set(fila)))
         self.assertEqual(set(fila), TUDO)
 
-    def test_sem_chave_nvidia_papo_cai_no_gemini(self):
-        self.assertEqual(self.fila("agora sim hein", {"claude", "gemini", "codex"})[0][0], "gemini")
+    def test_sem_claude_papo_cai_no_nemotron_e_sem_nvidia_no_gemini(self):
+        self.assertEqual(self.fila("agora sim hein", TUDO - {"claude"})[0][0], "nemotron")
+        self.assertEqual(self.fila("agora sim hein", {"gemini", "codex"})[0][0], "gemini")
 
     def test_apelidos(self):
         fila, texto, _ = rotear("pergunta pro Kimi quanto é 17 vezes 23", "auto", TUDO, EXTRAS, apelidos={"kimi": "nvidia_pro"})
@@ -162,6 +167,55 @@ class TestFala(unittest.TestCase):
         partes = dividir_frases("Um. Dois. Três. " + "palavra " * 60, 120)
         self.assertTrue(all(len(p) <= 120 for p in partes))
         self.assertEqual(partes[0], "Um. Dois. Três.")
+
+
+class TestHoraLocal(unittest.TestCase):
+    def test_comandos(self):
+        self.assertEqual(comando_local("que horas são?"), "hora")
+        self.assertEqual(comando_local("Que horas são agora?"), "hora")
+        self.assertEqual(comando_local("que dia é hoje"), "data")
+        self.assertIsNone(comando_local("que horas abre o mercado"))  # pergunta de verdade vai para a IA
+
+    def test_falas(self):
+        self.assertEqual(hora_falada(14, 5), "São 14:05.")
+        self.assertEqual(hora_falada(1, 30), "É 01:30.")
+        self.assertEqual(hora_falada(12, 0), "É meio-dia.")
+        self.assertEqual(data_falada(5, 22, 11), "Hoje é sábado, 22 de novembro.")
+
+
+def alimentar_aos_poucos(d: DivisorFala, texto: str, passo: int = 3) -> list[str]:
+    saida = []
+    for i in range(0, len(texto), passo):
+        saida += d.alimentar(texto[i:i + passo])
+    return saida + d.terminar()
+
+
+class TestDivisorFala(unittest.TestCase):
+    def test_primeira_frase_sai_antes_do_fim(self):
+        d = DivisorFala()
+        self.assertEqual(d.alimentar("Abrindo o Chrome. Já"), ["Abrindo o Chrome."])
+        self.assertEqual(d.alimentar(" está aberto"), [])
+        self.assertEqual(d.terminar(), ["Já está aberto."])
+
+    def test_streaming_reconstroi_tudo_sem_markdown(self):
+        texto = "**Pronto**, Lucas. Abri o projeto.\nTem dois testes falhando: o de login e o de cadastro."
+        partes = alimentar_aos_poucos(DivisorFala(), texto)
+        self.assertEqual(" ".join(partes), "Pronto, Lucas. Abri o projeto. Tem dois testes falhando: o de login e o de cadastro.")
+
+    def test_pula_bloco_de_codigo(self):
+        partes = alimentar_aos_poucos(DivisorFala(), "Rodei isto:\n```\ngit status\nnpm test\n```\nTudo passou.")
+        self.assertEqual(" ".join(partes), "Rodei isto: Tudo passou.")
+
+    def test_corta_no_limite(self):
+        d = DivisorFala(max_chars=40)
+        partes = alimentar_aos_poucos(d, "Primeira frase curta. Segunda frase também curta. Terceira que não cabe mais.")
+        self.assertTrue(d.cortado)
+        self.assertLessEqual(len(" ".join(partes)), 60)
+        self.assertEqual(partes[0], "Primeira frase curta.")
+
+    def test_numero_solto_nao_vira_trecho(self):
+        self.assertEqual(alimentar_aos_poucos(DivisorFala(), "Duas coisas. 1. Login quebrado."),
+                         ["Duas coisas.", "Login quebrado."])
 
 
 if __name__ == "__main__":

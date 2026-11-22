@@ -35,5 +35,19 @@ class TestMicrofone(unittest.TestCase):
         self.assertIsNone(escolher_microfone([{"nome": "X", "api": "MME", "rms": -1.0}], "Y"))
 
 
+class TestAparaSilencio(unittest.TestCase):
+    def test_tira_silencio_das_pontas(self):
+        import numpy as np
+
+        from jarvis.voz import aparar_silencio
+
+        voz = (np.sin(np.linspace(0, 300, 12000)) * 8000).astype(np.int16)  # 0,5 s de "voz" a 24 kHz
+        audio = np.concatenate([np.zeros(12000, np.int16), voz, np.zeros(12000, np.int16)])
+        cortado = aparar_silencio(audio, 24000)
+        self.assertLess(len(cortado), len(voz) + 2 * 24000 * 0.1)
+        self.assertGreaterEqual(len(cortado), len(voz) - 100)
+        self.assertEqual(len(aparar_silencio(np.zeros(100, np.int16), 24000)), 100)  # tudo silêncio: não mexe
+
+
 if __name__ == "__main__":
     unittest.main()

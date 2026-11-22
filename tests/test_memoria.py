@@ -139,12 +139,12 @@ class TestContextoNasIAs(unittest.TestCase):
         m = MotorClaude({}, Path("."), "Jarvis", [])
         m.exe = "claude"
         m.memoria, m.conversa = self.mem, self.conv
-        args = m._comando("oi", retomar=True)
+        args = m._comando(retomar=True)
         sistema = args[args.index("--append-system-prompt") + 1]
-        self.assertIn("Meu nome é Lucas", sistema)
-        self.assertIn("quanto é 2 mais 2", sistema)  # sem sessão: recebe a conversa recente
+        self.assertIn("Meu nome é Lucas", sistema)  # memória vai no sistema quando o processo sobe
+        self.assertIn("quanto é 2 mais 2", m._mensagem("oi"))  # sem sessão: a conversa recente vai na mensagem
         m.sessao = "abc"
-        args = m._comando("oi", retomar=True)
+        args = m._comando(retomar=True)
         self.assertEqual(args[args.index("--resume") + 1], "abc")
 
     def test_cli_pelo_stdin(self):

@@ -366,6 +366,7 @@ def main() -> int:
         QTimer.singleShot(400, mostrar_painel)
     log.info("Jarvis iniciado (boot=%s, reiniciado=%s)", args.boot, args.reiniciado)
     codigo = app.exec()
+    assistente.encerrar()  # fecha o processo do Claude que fica aberto entre os pedidos
     # Sai na marra: em 20/11 um Jarvis ficou vivo depois de "reiniciar" (preso no encerramento do áudio nativo) e
     # ficaram DOIS ouvindo e falando. Tudo que importa (preferências, log) já foi gravado.
     log.info("Jarvis encerrado")

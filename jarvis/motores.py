@@ -19,6 +19,7 @@ import datetime as _dt
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -50,20 +51,35 @@ def agora_por_extenso() -> str:
     return f"{DIAS[d.weekday()]}, {d:%d/%m/%Y}, {d:%H:%M}"
 
 
-def regras_voz(nome: str, estilo: list[str]) -> str:
+def regras_voz(nome: str, persona: list[str]) -> str:
+    """Prompt base de TODAS as IAs: quem o Jarvis é (persona do config.json) + regras de quem fala por voz."""
     linhas = [
-        f"Você é {nome}, assistente de voz pessoal rodando no computador Windows do usuário.",
+        f"Você é {nome}, assistente pessoal por voz que vive no computador Windows do usuário.",
+        *persona,
         "Responda sempre em português do Brasil.",
         "Sua resposta será lida em voz alta por síntese de voz, então: nada de markdown, listas, tabelas, emojis, código ou links.",
-        "No máximo 3 frases, a não ser que peçam detalhes.",
+        "Por padrão, de uma a três frases; mais só se pedirem detalhes ou explicação.",
         "Escreva em letras normais, nunca tudo em maiúsculas. Horas no formato de 24 horas. Números por extenso só se forem curtos.",
         "Nem toda fala é um pedido. Comentário, reação ou elogio (ex.: 'agora sim hein', 'boa', 'show', 'nossa', "
         "'que legal', 'ficou bom') recebe resposta curta e natural, como uma pessoa responderia ('Que bom!', "
         "'Pois é.', 'Às ordens.'), levando em conta a conversa recente. Nunca responda 'não entendi o pedido' "
         "nem pergunte o que a pessoa quer quando for só um comentário.",
-        *estilo,
     ]
     return "\n".join(linhas)
+
+
+# Só para quem tem ferramentas de verdade no PC (Claude Code).
+REGRAS_ACAO = (
+    "Você tem acesso de verdade a este computador: terminal, arquivos e internet. Quando pedirem para fazer algo, "
+    "faça com as ferramentas em vez de explicar como se faz.",
+    "Antes de uma tarefa que demora, diga em poucas palavras o que vai fazer ('Abrindo o Chrome.', 'Vou dar uma "
+    "olhada.'), porque você é ouvido enquanto trabalha. Ao terminar, diga em uma frase o que fez e o resultado.",
+    "Para abrir programas, sites, pastas ou arquivos no Windows use: "
+    "powershell -NoProfile -Command \"Start-Process '<programa, caminho ou endereço>'\".",
+    "Nada irreversível (apagar, enviar mensagem ou e-mail, publicar, comprar, mexer em servidor de produção) sem "
+    "perguntar antes e ouvir um sim.",
+    "Os pedidos chegam por voz (transcrição automática: pode haver palavras trocadas, interprete pelo sentido).",
+)
 
 
 def nota_seguimento(nome: str) -> str:
@@ -139,7 +155,7 @@ class MotorNemotron:
 
     lento = False
 
-    def __init__(self, cfg: dict, chave: str, nome_assistente: str, estilo: list[str], turnos: int = 10,
+    def __init__(self, cfg: dict, chave: str, nome_assistente: str, persona: list[str], turnos: int = 10,
                  nome: str = "nemotron", secao: str | None = None):
         c = cfg.get(secao or nome, {})
         self.nome = nome
@@ -155,7 +171,7 @@ class MotorNemotron:
         self.lento = bool(c.get("lento", False))
         self.chave = (chave or "").strip()
         self.nome_assistente = nome_assistente
-        self.estilo = estilo
+        self.persona = persona
         self.turnos = turnos
         self.encaminhar = True  # o Assistente desliga isso quando não há IA com ferramentas ou o modo é fixo
         self.historico: list[dict] = []  # só usado quando não há `conversa` compartilhada (testes, uso avulso)
@@ -177,7 +193,7 @@ class MotorNemotron:
         self.historico.clear()
 
     def _sistema(self) -> str:
-        s = regras_voz(self.nome_assistente, self.estilo) + f"\nAgora é {agora_por_extenso()} (horário de Brasília)."
+        s = regras_voz(self.nome_assistente, self.persona) + f"\nAgora é {agora_por_extenso()} (horário de Brasília)."
         if self.encaminhar:
             s += (
                 "\nVocê NÃO tem internet nem acesso ao computador. Se o pedido exigir isso (abrir ou mexer em programa, "
@@ -259,12 +275,33 @@ def achar_claude() -> str | None:
     return None
 
 
+class _Reiniciar(Exception):
+    """O processo do Claude morreu ou a sessão antiga não abriu: sobe outro e tenta de novo (uma vez)."""
+
+    def __init__(self, msg: str, sem_sessao: bool = False, ja_falou: bool = False):
+        super().__init__(msg)
+        self.sem_sessao = sem_sessao
+        self.ja_falou = ja_falou
+
+
+_ERRO_LOGIN = re.compile(r"authenticat|oauth|not logged|log ?in|/login|401|invalid api key", re.I)
+
+
 class MotorClaude:
+    """
+    Claude Code logado no PC (assinatura, sem chave de API), em UM processo que fica aberto:
+      claude -p --input-format stream-json --output-format stream-json --include-partial-messages ...
+    Cada pedido é uma linha JSON na entrada; a resposta volta em pedaços (`ao_parcial`), então o Jarvis começa a falar
+    a 1ª frase enquanto o resto ainda está sendo escrito. A sessão (`sessao`) sobrevive a reinício via `--resume`.
+    Cancelar = matar o processo; o próximo pedido sobe outro já retomando a mesma sessão.
+    """
+
     nome = "claude"
     rotulo = "Claude"
     lento = True
+    fluxo = True  # entrega a resposta em pedaços (fala enquanto gera)
 
-    def __init__(self, cfg: dict, pasta_trabalho: Path, nome_assistente: str, estilo: list[str]):
+    def __init__(self, cfg: dict, pasta_trabalho: Path, nome_assistente: str, persona: list[str]):
         c = cfg.get("claude", {})
         self.modelo = c.get("modelo") or ""
         self.permissao = c.get("permissao") or "auto"
@@ -272,41 +309,77 @@ class MotorClaude:
         self.timeout_s = float(c.get("timeout_s", 300))
         self.pasta = pasta_trabalho
         self.exe = achar_claude()
+        self.prefixo: list[str] | None = None  # testes: [python, claude_falso.py] no lugar do executável
         self.nome_assistente = nome_assistente
-        self.estilo = estilo
+        self.persona = persona
         self.sessao: str | None = None  # o Assistente grava em preferencias.json → claude_sessao (sobrevive a reinício)
         self.memoria = None
         self.conversa = None
         self.ultimo_erro = ""
         self._proc: subprocess.Popen | None = None
+        self._eventos: queue.Queue | None = None
+        self._trava = threading.RLock()
+        self._mem_conhecida = ""  # memória que o processo atual já recebeu (no sistema ou numa mensagem)
+        self._retomando = False   # processo atual subiu com --resume e ainda não respondeu nada
+        self._sem_login_ate = 0.0
 
+    # ------------------------------------------------------------------ estado
     @property
     def disponivel(self) -> bool:
-        return bool(self.exe)
+        return bool(self.prefixo or self.exe) and time.monotonic() >= self._sem_login_ate
 
     @property
     def motivo(self) -> str:
-        return "" if self.exe else "comando 'claude' não encontrado (instale o Claude Code e faça login)"
+        if not (self.prefixo or self.exe):
+            return "comando 'claude' não encontrado (instale o Claude Code e faça login)"
+        if time.monotonic() < self._sem_login_ate:
+            return "Claude sem login (no terminal: claude, depois /login)"
+        return ""
+
+    def vivo(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
 
     def nova_conversa(self) -> None:
         self.sessao = None
+        self.encerrar()
+
+    def encerrar(self) -> None:
+        proc, self._proc, self._eventos = self._proc, None, None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            _matar_arvore(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            proc.stdin.close()
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def aquecer(self) -> None:
+        """Sobe o processo antes do 1º pedido (a partida leva ~2 s)."""
+        with self._trava:
+            if self.disponivel and not self.vivo():
+                try:
+                    self._iniciar(retomar=True)
+                except OSError as e:
+                    log.warning("Não consegui abrir o Claude: %s", e)
+
+    # ------------------------------------------------------------------ processo
+    def _memoria_texto(self) -> str:
+        return self.memoria.para_prompt() if self.memoria is not None else ""
 
     def _sistema(self) -> str:
-        s = (
-            regras_voz(self.nome_assistente, self.estilo)
-            + f"\nAgora é {agora_por_extenso()}."
-            + "\nO pedido chegou por VOZ (transcrição automática: pode ter palavras trocadas, interprete pelo sentido)."
-            + "\nSe executar ações, diga em uma frase o que fez e o resultado. Se algo for arriscado ou irreversível, não faça: explique e peça confirmação."
-        )
-        # a sessão do Claude já tem as trocas que ELE respondeu; aqui vão só as que outras IAs responderam depois
-        turnos = None
-        if self.conversa is not None:
-            turnos = self.conversa.recente(6, depois_do_motor=self.nome if self.sessao else None)
-        extra = contexto_extra(self, turnos)
-        return s + ("\n\n" + extra if extra else "")
+        """Fixo enquanto o processo vive: quem ele é + regras de ação + memória do momento da partida."""
+        s = regras_voz(self.nome_assistente, self.persona) + "\n" + "\n".join(REGRAS_ACAO)
+        mem = self._memoria_texto()
+        return s + ("\n\n" + mem if mem else "")
 
-    def _comando(self, texto: str, retomar: bool) -> list[str]:
-        args = [self.exe, "-p", texto.lstrip("- "), "--output-format", "json", "--permission-mode", self.permissao,
+    def _comando(self, retomar: bool) -> list[str]:
+        args = [*(self.prefixo or [self.exe]), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                "--verbose", "--include-partial-messages", "--permission-mode", self.permissao,
                 "--append-system-prompt", self._sistema()]
         if self.modelo:
             args += ["--model", self.modelo]
@@ -316,48 +389,157 @@ class MotorClaude:
             args += ["--resume", self.sessao]
         return args
 
-    def _rodar(self, args: list[str], cancelar: threading.Event) -> dict:
-        proc = subprocess.Popen(
-            args, cwd=str(self.pasta), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            creationflags=SEM_JANELA, text=True, encoding="utf-8", errors="replace",
-        )
-        self._proc = proc
-        try:
-            out, err = _esperar(proc.communicate, cancelar, self.timeout_s, ao_cancelar=lambda: _matar_arvore(proc))
-        finally:
-            self._proc = None
-        dados = None
-        for linha in reversed((out or "").strip().splitlines()):
-            linha = linha.strip()
-            if linha.startswith("{"):
-                try:
-                    dados = json.loads(linha)
-                    break
-                except json.JSONDecodeError:
-                    continue
-        if dados is None:
-            raise ErroMotor(f"Claude saiu com código {proc.returncode}: {(err or out or '').strip()[:200]}")
-        return dados
+    def _iniciar(self, retomar: bool) -> None:
+        self.encerrar()
+        args = self._comando(retomar)
+        proc = subprocess.Popen(args, cwd=str(self.pasta), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, creationflags=SEM_JANELA, text=True, encoding="utf-8",
+                                errors="replace", bufsize=1)
+        eventos: queue.Queue = queue.Queue()
+        threading.Thread(target=self._ler_saida, args=(proc, eventos), name="jarvis-claude-saida", daemon=True).start()
+        threading.Thread(target=self._ler_erros, args=(proc,), name="jarvis-claude-erros", daemon=True).start()
+        self._proc, self._eventos = proc, eventos
+        self._mem_conhecida = self._memoria_texto()
+        self._retomando = bool(retomar and self.sessao)
+        log.info("Claude aberto (processo %s%s)", proc.pid, f", retomando {self.sessao}" if self._retomando else "")
 
-    def perguntar(self, texto: str, cancelar: threading.Event) -> str:
+    @staticmethod
+    def _ler_saida(proc: subprocess.Popen, eventos: queue.Queue) -> None:
+        try:
+            for linha in proc.stdout:
+                linha = linha.strip()
+                if linha.startswith("{"):
+                    try:
+                        eventos.put(json.loads(linha))
+                    except json.JSONDecodeError:
+                        pass
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                proc.stdout.close()
+            except (OSError, ValueError):
+                pass
+        eventos.put(None)  # o processo terminou
+
+    @staticmethod
+    def _ler_erros(proc: subprocess.Popen) -> None:
+        try:
+            for linha in proc.stderr:
+                if linha.strip():
+                    log.debug("claude stderr: %s", linha.rstrip()[:300])
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                proc.stderr.close()
+            except (OSError, ValueError):
+                pass
+
+    def _mensagem(self, texto: str) -> str:
+        """O pedido + o que mudou desde que o processo subiu (hora, memória nova, trocas feitas por outras IAs)."""
+        partes = [f"(Agora é {agora_por_extenso()}.)"]
+        mem = self._memoria_texto()
+        if mem != self._mem_conhecida:
+            partes.append("(A memória sobre o usuário mudou. Vale esta versão:)\n" + mem if mem
+                          else "(O usuário apagou a memória sobre ele.)")
+            self._mem_conhecida = mem
+        if self.conversa is not None:
+            # a sessão do Claude já tem as trocas que ELE respondeu; aqui vão só as que outras IAs responderam depois
+            from .memoria import Conversa
+
+            turnos = self.conversa.recente(6, depois_do_motor=self.nome if self.sessao else None)
+            if turnos:
+                partes.append(Conversa.como_texto(turnos))
+        partes.append(texto)
+        return "\n\n".join(partes)
+
+    # ------------------------------------------------------------------ pedido
+    def perguntar(self, texto: str, cancelar: threading.Event, ao_parcial=None, ao_ferramenta=None) -> str:
+        """Bloqueia até o fim da resposta. `ao_parcial(texto)` recebe cada pedaço; `ao_ferramenta(nome)` cada ferramenta."""
         if not self.disponivel:
             raise ErroMotor(self.motivo)
+        with self._trava:
+            for tentativa in (1, 2):
+                try:
+                    if not self.vivo():
+                        self._iniciar(retomar=True)
+                    resposta = self._turno(texto, cancelar, ao_parcial, ao_ferramenta)
+                    self.ultimo_erro = ""
+                    return resposta
+                except _Reiniciar as e:
+                    log.warning("Claude: %s (tentativa %d)", e, tentativa)
+                    self.encerrar()
+                    if e.sem_sessao:
+                        self.sessao = None
+                    if tentativa == 2 or e.ja_falou:
+                        self.ultimo_erro = str(e)
+                        raise ErroMotor(f"Claude: {e}") from None
+                except ErroMotor as e:
+                    self.ultimo_erro = str(e)
+                    raise
+                except OSError as e:
+                    self.ultimo_erro = str(e)
+                    raise ErroMotor(f"Claude não abriu: {e}") from None
+        raise ErroMotor("Claude: falhou duas vezes")
+
+    def _turno(self, texto: str, cancelar: threading.Event, ao_parcial, ao_ferramenta) -> str:
+        proc, eventos = self._proc, self._eventos
+        linha = {"type": "user", "message": {"role": "user", "content": self._mensagem(texto)}}
         try:
-            dados = self._rodar(self._comando(texto, retomar=True), cancelar)
-            if dados.get("is_error") and self.sessao:
-                # sessão antiga sumiu/expirou: tenta de novo numa conversa nova
-                log.warning("Claude falhou retomando a sessão %s; tentando conversa nova", self.sessao)
-                self.sessao = None
-                dados = self._rodar(self._comando(texto, retomar=False), cancelar)
-        except ErroMotor as e:
-            self.ultimo_erro = str(e)
-            raise
-        if dados.get("is_error"):
-            self.ultimo_erro = str(dados.get("result") or dados.get("subtype") or "erro")[:200]
-            raise ErroMotor(f"Claude: {self.ultimo_erro}")
-        self.sessao = dados.get("session_id") or self.sessao
-        self.ultimo_erro = ""
-        return str(dados.get("result") or "").strip() or "Feito."
+            proc.stdin.write(json.dumps(linha, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError, AttributeError):
+            raise _Reiniciar("o processo fechou antes do pedido", sem_sessao=self._retomando) from None
+        limite = time.monotonic() + self.timeout_s
+        pedacos: list[str] = []
+        while True:
+            if cancelar.is_set():
+                self.encerrar()
+                raise Cancelado()
+            if time.monotonic() > limite:
+                self.encerrar()
+                raise ErroMotor(f"Claude sem resposta em {int(self.timeout_s)} s")
+            try:
+                ev = eventos.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if ev is None:
+                raise _Reiniciar("o processo terminou no meio da resposta",
+                                 sem_sessao=self._retomando and not pedacos, ja_falou=bool(pedacos))
+            tipo = ev.get("type")
+            if tipo == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
+                self.sessao = ev["session_id"]
+            elif tipo == "stream_event" and not ev.get("parent_tool_use_id"):
+                e = ev.get("event") or {}
+                if e.get("type") == "content_block_start":
+                    bloco = e.get("content_block") or {}
+                    if bloco.get("type") == "tool_use" and ao_ferramenta:
+                        ao_ferramenta(str(bloco.get("name") or ""))
+                    elif bloco.get("type") == "text" and pedacos:
+                        pedacos.append("\n")  # texto novo depois de uma ferramenta: separa da frase anterior
+                        if ao_parcial:
+                            ao_parcial("\n")
+                elif e.get("type") == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
+                    t = e["delta"].get("text") or ""
+                    if t:
+                        pedacos.append(t)
+                        if ao_parcial:
+                            ao_parcial(t)
+            elif tipo == "result":
+                self.sessao = ev.get("session_id") or self.sessao
+                if ev.get("is_error"):
+                    msg = str(ev.get("result") or ev.get("subtype") or "erro")
+                    if _ERRO_LOGIN.search(msg):
+                        self._sem_login_ate = time.monotonic() + 300
+                        self.encerrar()
+                        raise ErroMotor("Claude sem login (no terminal: claude, depois /login)")
+                    if self._retomando and not pedacos:
+                        raise _Reiniciar(f"a sessão antiga não abriu ({msg[:120]})", sem_sessao=True)
+                    raise ErroMotor(f"Claude: {msg[:200]}")
+                self._retomando = False
+                completo = "".join(pedacos).strip()
+                return completo or str(ev.get("result") or "").strip() or "Feito."
 
 
 # ===================================================================================================== CLI genérico
@@ -406,7 +588,7 @@ class MotorCLI:
 
     lento = True
 
-    def __init__(self, nome: str, c: dict, pasta_trabalho: Path, nome_assistente: str = "Jarvis", estilo: list[str] | None = None):
+    def __init__(self, nome: str, c: dict, pasta_trabalho: Path, nome_assistente: str = "Jarvis", persona: list[str] | None = None):
         self.nome = nome
         self.rotulo = c.get("rotulo") or nome.capitalize()
         self.comando = list(c.get("comando") or [])
@@ -416,7 +598,7 @@ class MotorCLI:
         self.pasta = Path(c["pasta"]) if c.get("pasta") else pasta_trabalho
         self.exe = achar_cli(self.comando[0]) if self.comando else None
         self.nome_assistente = nome_assistente
-        self.estilo = estilo or []
+        self.persona = persona or []
         self.memoria = None
         self.conversa = None
         self.ultimo_erro = ""
@@ -466,7 +648,7 @@ class MotorCLI:
     def montar_prompt(self, texto: str) -> str:
         turnos = self.conversa.recente(6) if self.conversa is not None else None
         partes = [
-            regras_voz(self.nome_assistente, self.estilo),
+            regras_voz(self.nome_assistente, self.persona),
             f"Agora é {agora_por_extenso()}.",
             "O pedido chegou por VOZ (transcrição automática: pode ter palavras trocadas, interprete pelo sentido).",
             "Se algo for arriscado ou irreversível, não faça: explique e peça confirmação.",
