@@ -151,6 +151,9 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
 - **Fase 2 planejada:** openWakeWord (palavra de ativação local, tem modelo "hey jarvis"), Piper (voz local instantânea
   pt-BR), comandos diretos do PC sem IA (abrir app, volume, janelas), Whisper na Intel Arc (OpenVINO), memória
   sincronizada entre PCs.
+- **Estética futura (o Lucas pediu para depois da funcionalidade):** voz mais natural, "tipo a do ChatGPT". A atual é a
+  neural Antonio do Edge (+8%, -4Hz) e soa robótica para ele. Caminhos: vozes "Multilingual" do próprio Edge (grátis,
+  mais naturais), voz local tipo XTTS/F5-TTS, ou pagas (OpenAI/ElevenLabs — fogem da regra "nenhuma API paga").
 
 ### Teste com o Claude real (22/11/2026, notebook) e o que mudou por causa dele
 - Claude em processo fixo, aquecido: 1ª palavra em ~1 s; papo falado em 3,3 s (antes 5,6 s); explicação começa a ser
