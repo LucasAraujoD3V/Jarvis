@@ -5,7 +5,7 @@
   "semelhanca_minima": 0.75,
   "idioma": "pt-BR",
   "saudacao": ["{periodo}, {usuario}. Tô online.", "{periodo}, {usuario}. Pronto quando precisar.", "{periodo}. Jarvis no ar."],
-  "respostas_ativacao": ["Sim?", "Pois não?", "Diga, {usuario}.", "Tô ouvindo.", "Fala."],
+  "respostas_ativacao": ["{periodo}, {usuario}. O que deseja?", "{periodo}, {usuario}. Em que posso ajudar hoje?", "{periodo}. Às suas ordens.", "{periodo}, {usuario}. Pode falar.", "{periodo}! Estou aqui. O que manda?"],
   "iniciar_com_windows": true,
 
   "persona": [

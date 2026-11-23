@@ -61,6 +61,18 @@ class HUD(QWidget):
         self._timer_esconder = QTimer(self)
         self._timer_esconder.setSingleShot(True)
         self._timer_esconder.timeout.connect(self.esconder)
+        # único botão: minimizar (volta pelo ícone da bandeja ou quando ouvir "Jarvis")
+        from PySide6.QtWidgets import QPushButton
+
+        self._btn_min = QPushButton("–", self)
+        self._btn_min.setFixedSize(26, 26)
+        self._btn_min.move(self.LARGURA - 34, 8)
+        self._btn_min.setCursor(Qt.PointingHandCursor)
+        self._btn_min.setToolTip("Minimizar (volta pelo ícone da bandeja ou ao ouvir “Jarvis”)")
+        self._btn_min.setStyleSheet(
+            "QPushButton{color:#7fdcff;background:rgba(8,18,28,150);border:1px solid rgba(127,220,255,90);"
+            "border-radius:13px;font-size:15px;} QPushButton:hover{background:rgba(127,220,255,70);}")
+        self._btn_min.clicked.connect(self.esconder)
 
     # ------------------------------------------------------------------ API
     def definir_estado(self, e: str) -> None:

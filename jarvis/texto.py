@@ -83,7 +83,10 @@ COMANDOS_LOCAIS: dict[str, set[str]] = {
     "motor:claude": {"usa o claude", "usar o claude", "usa claude", "usar claude", "modo claude", "muda pro claude", "troca pro claude", "muda para o claude", "troca para o claude"},
     "motor:nemotron": {"usa o nemotron", "usar o nemotron", "usa nemotron", "usar nemotron", "modo nemotron", "muda pro nemotron", "troca pro nemotron", "muda para o nemotron", "troca para o nemotron"},
     "motor:auto": {"modo automatico", "usa o automatico", "motor automatico", "volta pro automatico", "modo auto"},
-    "desligar": {"desliga", "desligar", "desligue", "se desliga", "vai dormir", "dormir", "desativar", "desativa", "desliga o microfone"},
+    # dormir (não fecha: o nome acorda de novo)
+    "desligar": {"desliga", "desligar", "desligue", "se desliga", "vai dormir", "dormir", "desativar", "desativa",
+                 "desliga o microfone", "boa noite", "pode dormir", "pode descansar", "ate amanha", "ate mais"},
+    "saudacao": {"bom dia", "boa tarde", "oi", "ola", "e ai", "fala", "acorda", "acorda ai", "oi tudo bem", "opa"},
     "reiniciar": {"reinicia", "reiniciar", "reinicie", "se reinicia", "reinicia o assistente"},
     # respondidos na hora, sem IA (a IA levaria ~2 s para dizer a hora)
     "hora": {"que horas sao", "que hora e", "que horas e", "que horas", "me diz as horas", "fala as horas", "horas",

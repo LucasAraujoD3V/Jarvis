@@ -316,7 +316,7 @@ def main() -> int:
         origem.mudou_autostart.connect(mudar_autostart)
     painel.pedir_texto.connect(assistente.enviar_texto)
     painel.pedir_chave.connect(salvar_chave)
-    bandeja.pedir_painel.connect(mostrar_painel)
+    bandeja.pedir_painel.connect(hud.mostrar)  # clique no ícone = mostra o rosto
     bandeja.pedir_sair.connect(sair)
     hud.clicado.connect(assistente.parar)
     assistente.pedir_reinicio.connect(reiniciar)
@@ -362,8 +362,7 @@ def main() -> int:
     if aviso_inicio:
         prefs.set("aviso_inicio", None)
         QTimer.singleShot(9500 if args.boot else 1500, lambda: assistente.dizer(aviso_inicio))
-    if not args.boot and not args.reiniciado:  # aberto à mão: mostra o painel; no boot fica só na bandeja
-        QTimer.singleShot(400, mostrar_painel)
+    # só o rosto: nada de painel ao abrir (o painel antigo fica escondido; a tela é o rosto animado do HUD)
     log.info("Jarvis iniciado (boot=%s, reiniciado=%s)", args.boot, args.reiniciado)
     codigo = app.exec()
     assistente.encerrar()  # fecha o processo do Claude que fica aberto entre os pedidos

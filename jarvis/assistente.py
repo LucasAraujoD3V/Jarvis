@@ -241,16 +241,20 @@ class Assistente(QObject):
         self._ligado = False
         self._tentar_de_novo: threading.Timer | None = None
         threading.Thread(target=self._loop, name="jarvis-cerebro", daemon=True).start()
-        threading.Thread(target=self._aquecer, name="jarvis-aquecer", daemon=True).start()
+        self._dormindo = False  # "boa noite, Jarvis": só acorda quando ouvir o nome
+        self._aquecer()
 
     @staticmethod
     def _aquecer() -> None:
-        """Importa a síntese de voz antes da 1ª fala (a 1ª chamada fria levava ~4 s)."""
-        try:
-            import edge_tts  # noqa: F401
-            import miniaudio  # noqa: F401
-        except Exception:
-            pass
+        """Importa as bibliotecas pesadas AQUI, na thread principal, antes das outras threads. Em 22/11/2026 (Python 3.14)
+        importar edge_tts/yarl numa thread enquanto outra importava o Whisper derrubou o processo (0xc0000005 no GC)."""
+        import importlib
+
+        for mod in ("edge_tts", "aiohttp", "miniaudio", "speech_recognition", "faster_whisper"):
+            try:
+                importlib.import_module(mod)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _formatar(self, texto: str) -> str:
         """Troca {usuario}, {nome} e {periodo} ('Bom dia'...) nas frases do config.json."""
@@ -433,6 +437,11 @@ class Assistente(QObject):
         if not self._ligado:
             return
         achou, resto = extrair_comando(texto, self.chaves, self.semelhanca)
+        if self._dormindo:  # dormindo: só o nome acorda ("boa noite, Jarvis" de novo não)
+            if not achou or comando_local(resto or "") == "desligar":
+                return
+            self._dormindo = False
+            log.info("Acordou: %s", texto)
         if not achou and not self._janela_aberta():
             log.debug("Ignorado (sem palavra de ativação): %s", texto)
             return
@@ -490,10 +499,14 @@ class Assistente(QObject):
             self.registro.emit("jarvis", fala, "local")
             self.conversa.adicionar(cmd, fala, "local")
             self.dizer(fala, abrir_janela=True)
-        elif local == "desligar":
+        elif local == "saudacao":  # "bom dia, Jarvis" / "oi, Jarvis"
+            self.dizer(self._frase_do_config("respostas_ativacao", "Sim?"), abrir_janela=True)
+        elif local == "desligar":  # "boa noite, Jarvis" / "desliga": dorme (o microfone segue ouvindo só o nome)
             self.parar()
-            self._fila.put(("falar", "Desligando. Me ligue pela bandeja.", False))
-            self._fila.put(("desligar",))
+            self._janela_ate = 0
+            self._dormindo = True
+            self.dizer(self._formatar(random.choice(["{periodo}, {usuario}. Vou descansar. É só me chamar.",
+                                                     "Até mais, {usuario}. Qualquer coisa, me chama."])))
         elif local == "reiniciar":
             self.parar()
             self._fila.put(("falar", "Reiniciando.", False))

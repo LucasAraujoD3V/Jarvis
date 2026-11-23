@@ -49,6 +49,8 @@ class TestComandosLocais(unittest.TestCase):
         self.assertEqual(comando_local("modo automático"), "motor:auto")
         self.assertEqual(comando_local("nova conversa, por favor"), "nova_conversa")
         self.assertEqual(comando_local("desliga"), "desligar")
+        self.assertEqual(comando_local("Boa noite"), "desligar")  # "boa noite, Jarvis" = dormir
+        self.assertEqual(comando_local("bom dia"), "saudacao")
         self.assertEqual(comando_local("obrigado"), "encerrar")
 
     def test_pedido_de_verdade_nao_e_local(self):

@@ -32,7 +32,7 @@ class Bandeja(QSystemTrayIcon):
         self.acao_status = QAction(f"{nome}: —", m)
         self.acao_status.setEnabled(False)
         m.addAction(self.acao_status)
-        m.addAction("Abrir painel", self.pedir_painel.emit)
+        m.addAction("Mostrar o Jarvis", self.pedir_painel.emit)
         m.addSeparator()
         self.acao_ligar = m.addAction("Ligar", self.pedir_ligar.emit)
         self.acao_desligar = m.addAction("Desligar", self.pedir_desligar.emit)
