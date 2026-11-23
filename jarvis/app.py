@@ -243,15 +243,22 @@ def main() -> int:
         painel.definir_info(assistente.ouvinte.nome_microfone, "IAs — " + " · ".join(partes), "nemotron" not in disp)
 
     # ------------------------------------------------------------ estado → interface
+    minimizado = {"on": False}  # o usuário clicou em "–": fica escondido até ele chamar "Jarvis"
+
     def ao_estado(e: str) -> None:
-        hud.definir_estado(e)
-        painel.definir_estado(e)
-        bandeja.definir_estado(e)
-        if e in ("atento", "pensando", "falando"):
+        visual = "desligado" if e == "dormindo" else e
+        hud.definir_estado(visual)
+        painel.definir_estado(visual)
+        bandeja.definir_estado(visual)
+        if e in ("dormindo", "desligado"):  # só some dormindo ("boa noite, Jarvis") ou desligado
+            hud.esconder()
+            cartao.hide()
+        elif e in ("atento", "pensando", "falando"):
+            minimizado["on"] = False
             if popup["on"]:
                 hud.mostrar()
-        else:
-            hud.esconder_em(esconder_s)
+        elif popup["on"] and not minimizado["on"]:
+            hud.mostrar()
         atualizar_info()
 
     def ao_nivel(v: float) -> None:
@@ -271,6 +278,7 @@ def main() -> int:
     assistente.detalhe.connect(lambda t: cartao.mostrar(t, hud))
     assistente.legenda.connect(lambda quem, _t: cartao.hide() if quem == "voce" else None)  # pergunta nova: some
     hud._btn_min.clicked.connect(cartao.hide)
+    hud._btn_min.clicked.connect(lambda: minimizado.update(on=True))
     assistente.registro.connect(painel.registrar)
     assistente.aviso.connect(painel.aviso)
     assistente.motor_mudou.connect(ao_motor)

@@ -33,6 +33,7 @@ from .texto import (ROTAS_PADRAO, DivisorFala, comando_local, fala_e_texto, coma
                     hora_falada, limpar_para_fala, normalizar_token, pedido_de_motor, rotear)
 from .voz import Falante, Ouvinte
 
+JUNTAR_S = 4.0  # frase que chega até 4 s depois, com ele ainda pensando, é continuação da anterior
 MOTORES_COM_FERRAMENTAS = ("claude", "gemini", "codex")  # para onde vai o que o modelo sem internet ENCAMINHAR
 
 log = logging.getLogger("jarvis.assistente")
@@ -243,6 +244,8 @@ class Assistente(QObject):
         self._tentar_de_novo: threading.Timer | None = None
         threading.Thread(target=self._loop, name="jarvis-cerebro", daemon=True).start()
         self._dormindo = False  # "boa noite, Jarvis": só acorda quando ouvir o nome
+        self._pedido_atual = ""  # o que está sendo pensado agora (para juntar com a continuação da fala)
+        self._pedido_t = 0.0
         self._aquecer()
 
     @staticmethod
@@ -433,11 +436,16 @@ class Assistente(QObject):
         self._janela_ate = time.monotonic() + self.janela_s
         log.info("Janela de seguimento aberta (%.0f s)", self.janela_s)
 
-    def _ao_texto(self, texto: str) -> None:
-        """Frase transcrita do microfone (thread de transcrição)."""
+    def _ao_texto(self, texto: str, durante_fala: bool = False) -> None:
+        """Frase transcrita do microfone (thread de transcrição). durante_fala = captada enquanto ele falava."""
         if not self._ligado:
             return
         achou, resto = extrair_comando(texto, self.chaves, self.semelhanca)
+        if durante_fala:  # enquanto ele fala só o nome vale (o resto é eco da própria voz): cala e escuta
+            if not achou:
+                return
+            log.info("Interrompido por: %s", texto)
+            self.parar()
         if self._dormindo:  # dormindo: só o nome acorda ("boa noite, Jarvis" de novo não)
             if not achou or comando_local(resto or "") == "desligar":
                 return
@@ -513,6 +521,15 @@ class Assistente(QObject):
             self._fila.put(("falar", "Reiniciando.", False))
             self._fila.put(("reiniciar",))
         else:
+            # sem fila: pedido novo substitui o que ainda está sendo pensado. Se chegou logo depois (pausa no meio da
+            # fala), junta com o anterior em vez de perder a 1ª parte.
+            agora = time.monotonic()
+            if self._ocupado and self._estado == "pensando" and agora - self._pedido_t < JUNTAR_S and self._pedido_atual:
+                log.info("Continuação da fala: juntando com o pedido anterior")
+                cmd = f"{self._pedido_atual} {cmd}"
+            if self._ocupado:
+                self.parar()
+            self._pedido_atual, self._pedido_t = cmd, agora
             self._fila.put(("perguntar", cmd, seguimento))
 
     def _ultimo_uso_check(self) -> None:
@@ -571,6 +588,8 @@ class Assistente(QObject):
     def _estado_ocioso(self) -> str:
         if not self._ligado:
             return "desligado"
+        if self._dormindo:
+            return "dormindo"
         return "atento" if self._janela_aberta() else "ouvindo"
 
     def _loop(self) -> None:

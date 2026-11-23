@@ -130,6 +130,9 @@ class Ouvinte:
         self.max_frase = float(cfg_mic.get("max_frase_s", 15))
         self.fala_minima = float(cfg_mic.get("fala_minima_s", 0.3))
         self.limiar = self.limiar_minimo
+        # ouve também enquanto fala, para "Jarvis, para" interromper (só frases com o nome valem; o resto é eco)
+        self.escutar_falando = bool(cfg_mic.get("interromper_falando", True))
+        self.max_frase_falando = float(cfg_mic.get("max_frase_falando_s", 3.0))
         self.piso = 0.0
         self.nome_microfone = ""
         self.sem_sinal = False
@@ -236,6 +239,7 @@ class Ouvinte:
         pre = collections.deque(maxlen=int(0.45 / BLOCO_S))  # pega o começo da palavra
         recentes = collections.deque(maxlen=10)
         gravando = False
+        durante = False  # a frase foi captada enquanto o Jarvis falava (eco + talvez o usuário interrompendo)
         blocos: list[np.ndarray] = []
         voz_s = silencio_s = 0.0
         contador = 0
@@ -260,7 +264,8 @@ class Ouvinte:
                 break
             ultimo_bloco = time.monotonic()
             v = rms(bloco)
-            historico.append(v)
+            if not self.mudo:  # a própria voz não entra na estimativa do ruído de fundo
+                historico.append(v)
             janela.append(v)
             contador += 1
             if time.monotonic() < self._vigia_pausado_ate:  # outro processo mediu este microfone: ignora o tranco
@@ -289,7 +294,7 @@ class Ouvinte:
                 minuto = []
                 frases_minuto = 0
 
-            if self.mudo:
+            if self.mudo and not self.escutar_falando:
                 gravando = False
                 self.ouvindo_frase = False
                 blocos = []
@@ -303,6 +308,7 @@ class Ouvinte:
                 recentes.append(fala)
                 if sum(recentes) >= 4:  # ~120 ms de voz nos últimos 300 ms
                     gravando = True
+                    durante = self.mudo
                     self.ouvindo_frase = True
                     blocos = list(pre)
                     voz_s = sum(recentes) * BLOCO_S
@@ -316,7 +322,9 @@ class Ouvinte:
             else:
                 silencio_s += BLOCO_S
             dur = len(blocos) * BLOCO_S
-            if silencio_s >= self.silencio_fim or dur >= self.max_frase:
+            durante = durante or self.mudo
+            # enquanto ele fala, o eco vira 'fala' sem parar: corta em pedaços curtos para achar o nome rápido
+            if silencio_s >= self.silencio_fim or dur >= (self.max_frase_falando if durante else self.max_frase):
                 if voz_s >= self.fala_minima:
                     frases_minuto += 1
                     audio = np.concatenate(blocos)
@@ -324,7 +332,7 @@ class Ouvinte:
                     log.info("Frase captada: %.1f s, voz %.1f s, volume pico %.0f (limiar %.0f)",
                              dur, voz_s, max(rms(audio[i:i + BLOCO]) for i in range(0, len(audio), BLOCO)), self.limiar)
                     try:
-                        self._frases.put_nowait(audio)
+                        self._frases.put_nowait((audio, durante))
                     except queue.Full:
                         log.warning("Fila de transcrição cheia: frase descartada")
                 gravando = False
@@ -341,9 +349,10 @@ class Ouvinte:
                 continue
             if audio is None:
                 break
+            audio, durante = audio if isinstance(audio, tuple) else (audio, False)
             t0 = time.monotonic()
             try:
-                texto = self.transcritor.transcrever(audio)
+                texto = self.transcritor.transcrever(audio, reserva=not durante)
             except Exception as e:  # noqa: BLE001
                 log.exception("Erro na transcrição")
                 self.ao_aviso(f"Erro na transcrição: {e}")
@@ -351,7 +360,7 @@ class Ouvinte:
             texto = (texto or "").strip()
             if texto:
                 log.debug("Transcrito em %.1f s: %s", time.monotonic() - t0, texto)
-                self.ao_texto(texto)
+                self.ao_texto(texto, durante)
 
 
 # ===================================================================================================== Falante

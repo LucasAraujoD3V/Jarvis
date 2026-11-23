@@ -304,10 +304,10 @@ class Transcritor:
         except sr.RequestError as e:
             raise ConnectionError(str(e)) from None
 
-    def transcrever(self, audio: np.ndarray) -> str:
-        """Texto da frase ('' = não era fala / ninguém entendeu)."""
+    def transcrever(self, audio: np.ndarray, reserva: bool = True) -> str:
+        """Texto da frase ('' = não era fala / ninguém entendeu). reserva=False: só o principal (eco da própria voz)."""
         ordem = [self.principal]
-        if self.reserva and self.whisper is not None:
+        if reserva and self.reserva and self.whisper is not None:
             ordem.append("whisper" if self.principal == "google" else "google")
         erro_rede = None
         for jeito in ordem:

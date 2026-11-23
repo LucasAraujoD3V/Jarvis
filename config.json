@@ -4,7 +4,7 @@
   "palavras_chave": ["jarvis", "jarbas", "jarvas", "jervis", "javis", "jarvi", "jarves", "harvis", "garvis"],
   "semelhanca_minima": 0.75,
   "idioma": "pt-BR",
-  "saudacao": ["{periodo}, {usuario}. Tô online.", "{periodo}, {usuario}. Pronto quando precisar.", "{periodo}. Jarvis no ar."],
+  "saudacao": ["{periodo}, {usuario}. Tô online.", "{periodo}, {usuario}. Pronto quando precisar."],
   "respostas_ativacao": ["{periodo}, {usuario}. O que deseja?", "{periodo}, {usuario}. Em que posso ajudar hoje?", "{periodo}. Às suas ordens.", "{periodo}, {usuario}. Pode falar.", "{periodo}! Estou aqui. O que manda?"],
   "iniciar_com_windows": true,
 
@@ -30,7 +30,7 @@
     "dispositivo": null,
     "limiar_minimo": 20,
     "fator_ruido": 2.6,
-    "silencio_fim_s": 0.9,
+    "silencio_fim_s": 1.2,
     "max_frase_s": 15,
     "fala_minima_s": 0.3
   },
