@@ -448,6 +448,48 @@ def dividir_frases(texto: str, max_trecho: int = 220) -> list[str]:
 
 _FIM_FRASE = re.compile(r"(?<=[.!?…])\s+|\n+")
 _SO_NUMERO = re.compile(r"\d+[.)]?")
+# A IA fala curto e, se o assunto pedir, escreve a versão completa depois desta marca (vai para o cartão na tela).
+MARCA_TEXTO = "[[TEXTO]]"
+
+
+def separar_detalhe(texto: str) -> tuple[str, str]:
+    """(fala, texto_escrito). Sem a marca: (texto inteiro, '')."""
+    t = texto or ""
+    i = t.find(MARCA_TEXTO)
+    if i < 0:
+        return t, ""
+    return t[:i].strip(), t[i + len(MARCA_TEXTO):].strip()
+
+
+_PARAGRAFO = re.compile(r"\n\s*\n")
+FALA_MINIMA = 60  # o 1º parágrafo só encerra a fala se já tiver isso de texto ("Pronto." sozinho não encerra)
+
+
+def fim_da_fala(texto: str) -> int:
+    """Onde a parte FALADA termina: na marca [[TEXTO]] ou na 1ª quebra de parágrafo depois de FALA_MINIMA letras.
+    O Claude nem sempre usa a marca (teste real 22/11: mandou explicação com tópicos direto), então o 1º parágrafo
+    vira a fala e o resto vai para o cartão. -1 = ainda não dá para saber / tudo é fala."""
+    i = texto.find(MARCA_TEXTO)
+    for m in _PARAGRAFO.finditer(texto):
+        if i >= 0 and m.start() > i:
+            break
+        if len(texto[:m.start()].strip()) >= FALA_MINIMA:
+            return m.start()
+    return i
+
+
+def fala_e_texto(texto: str) -> tuple[str, str]:
+    """(fala, texto_completo_para_o_cartão). Cartão vazio quando não sobra nada relevante além da fala."""
+    t = texto or ""
+    corte = fim_da_fala(t)
+    if corte < 0:
+        return t, ""
+    fala = t[:corte].strip()
+    resto = t[corte:].replace(MARCA_TEXTO, "", 1).strip()
+    if len(resto) < 40:
+        return (fala + " " + resto).strip() if MARCA_TEXTO not in t else fala, ""
+    escrito = separar_detalhe(t)[1] if MARCA_TEXTO in t else t.strip()
+    return fala, escrito
 # A busca na web do Claude Code manda terminar com "Sources:" + links. Isso vai para o painel, nunca para a voz.
 _FONTES = re.compile(r"^\W*(sources|fontes|refer[eê]ncias|links)\W*$", re.I)
 _FONTES_BLOCO = re.compile(r"\n\s*\W*(?:sources|fontes|refer[eê]ncias)\W*\s*\n[\s\S]*$", re.I)
@@ -490,17 +532,35 @@ class DivisorFala:
         self.agrupar = agrupar
         self.max_trecho = max_trecho
         self._buf = ""
+        self._todo = ""
+        self._ini = 0
         self._falados = 0
         self._primeira = True
         self.cortado = False
         self.fontes = False  # chegou o bloco "Sources:": dali para frente nada é falado
 
     def alimentar(self, pedaco: str) -> list[str]:
-        self._buf += pedaco or ""
-        return self._extrair(final=False)
+        return self._receber(pedaco or "", final=False)
 
     def terminar(self) -> list[str]:
-        return self._extrair(final=True)
+        return self._receber("", final=True)
+
+    def _receber(self, pedaco: str, final: bool) -> list[str]:
+        """O fim da fala (marca ou 1º parágrafo) é medido no texto ACUMULADO: em pedaços, a quebra de linha que fecha
+        o parágrafo chega separada e o buffer sozinho nunca a via."""
+        if self.cortado or self.fontes:
+            return []
+        self._todo += pedaco
+        corte = fim_da_fala(self._todo)
+        if corte >= 0:
+            self._buf = self._todo[self._ini:corte] if corte > self._ini else ""
+            saida = self._extrair(final=True)
+            self.fontes = True  # dali para frente é só cartão
+            return saida
+        self._buf = self._todo[self._ini:]
+        saida = self._extrair(final=final)
+        self._ini = len(self._todo) - len(self._buf)
+        return saida
 
     def _extrair(self, final: bool) -> list[str]:
         if self.cortado or self.fontes:
@@ -519,7 +579,7 @@ class DivisorFala:
         saida: list[str] = []
         grupo = ""
         for p in completas:
-            if _FONTES.match(p.strip()):
+            if _FONTES.match(p.strip()) or MARCA_TEXTO in p:
                 self.fontes = True
                 self._buf = ""
                 break
@@ -552,7 +612,7 @@ class DivisorFala:
 
 def limpar_para_fala(texto: str, max_chars: int = 600) -> tuple[str, bool]:
     """Devolve (texto_para_falar, cortado?). Corta no fim de frase antes do limite. Fontes ('Sources:') não são faladas."""
-    t = limpar_markdown(tirar_fontes(texto))
+    t = limpar_markdown(tirar_fontes(fala_e_texto(texto)[0]))
     if len(t) <= max_chars:
         return t, False
     frases = [f.strip() for f in re.split(r"(?<=[.!?])\s+", t) if f.strip()]

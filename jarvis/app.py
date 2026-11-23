@@ -265,6 +265,12 @@ def main() -> int:
     assistente.estado.connect(ao_estado)
     assistente.nivel.connect(ao_nivel)
     assistente.legenda.connect(hud.definir_legenda)
+    from .cartao import Cartao
+
+    cartao = Cartao(nome)
+    assistente.detalhe.connect(lambda t: cartao.mostrar(t, hud))
+    assistente.legenda.connect(lambda quem, _t: cartao.hide() if quem == "voce" else None)  # pergunta nova: some
+    hud._btn_min.clicked.connect(cartao.hide)
     assistente.registro.connect(painel.registrar)
     assistente.aviso.connect(painel.aviso)
     assistente.motor_mudou.connect(ao_motor)

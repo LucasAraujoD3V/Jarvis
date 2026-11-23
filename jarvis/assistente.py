@@ -29,7 +29,7 @@ from .memoria import Conversa, Memoria
 from .motores import (Cancelado, ErroMotor, MotorClaude, MotorCLI, MotorNemotron, SINAL_ENCAMINHAR, SINAL_IGNORAR,
                       nota_seguimento)
 from .stt import Transcritor
-from .texto import (ROTAS_PADRAO, DivisorFala, comando_local, comando_memoria, data_falada, extrair_comando,
+from .texto import (ROTAS_PADRAO, DivisorFala, comando_local, fala_e_texto, comando_memoria, data_falada, extrair_comando,
                     hora_falada, limpar_para_fala, normalizar_token, pedido_de_motor, rotear)
 from .voz import Falante, Ouvinte
 
@@ -164,6 +164,7 @@ class Assistente(QObject):
     nivel = Signal(float)              # 0..1 — volume da voz (falando) ou do microfone (atento)
     legenda = Signal(str, str)         # quem ("voce" | "jarvis" | "status"), texto
     registro = Signal(str, str, str)   # quem, texto, detalhe — histórico do painel
+    detalhe = Signal(str)              # versão escrita completa da resposta (cartão ao lado do rosto)
     aviso = Signal(str)                # mensagens de status/erro
     motor_mudou = Signal(str)          # auto | claude | nemotron | ...
     pedir_reinicio = Signal()
@@ -648,6 +649,10 @@ class Assistente(QObject):
             return
         log.info("Resposta %s (%.1f s): %s", motor.rotulo, ms / 1000, resposta[:300].replace("\n", " "))
         self.registro.emit("jarvis", resposta, f"{motor.rotulo} · {ms / 1000:.1f} s")
+        _, escrito = fala_e_texto(resposta)
+        if escrito:
+            log.info("Texto completo no cartão (%d caracteres)", len(escrito))
+            self.detalhe.emit(escrito)
         self.conversa.adicionar(pedido_original or texto, resposta, motor.nome)
         if motor.nome == "claude":
             self.prefs.set("claude_sessao", motor.sessao)

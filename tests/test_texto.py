@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from jarvis.texto import (  # noqa: E402
     DivisorFala, categoria, comando_local, data_falada, dividir_frases, escolher_motor, extrair_comando, hora_falada,
-    limpar_para_fala, parece_acao, pedido_de_motor, rotear,
+    fala_e_texto, limpar_para_fala, parece_acao, pedido_de_motor, rotear,
 )
 
 CHAVES = ["jarvis", "jarbas", "javis"]
@@ -228,6 +228,20 @@ class TestDivisorFala(unittest.TestCase):
         self.assertTrue(d.fontes)
         self.assertFalse(d.cortado)  # não é corte por tamanho: não diz "o resto está no painel"
         self.assertEqual(limpar_para_fala(texto)[0], "O dólar comercial está em torno de R$ 5,94.")
+
+    def test_fala_so_primeiro_paragrafo(self):
+        # resposta real do Claude (22/11): explicação + tópicos, sem a marca [[TEXTO]]
+        real = ("Inflação é o aumento geral e contínuo dos preços de bens e serviços numa economia, o que reduz o poder "
+                "de compra da moeda.\n\n**Como ela surge:**\n- **Demanda > oferta**: quando as pessoas querem comprar "
+                "mais do que se produz.\n- **Custos sobem**: energia e salários mais caros.")
+        d = DivisorFala()
+        partes = alimentar_aos_poucos(d, real)
+        self.assertEqual(partes, ["Inflação é o aumento geral e contínuo dos preços de bens e serviços numa economia",
+                                  "o que reduz o poder de compra da moeda."])
+        fala, cartao = fala_e_texto(real)
+        self.assertTrue(fala.startswith("Inflação") and "Como ela surge" not in fala)
+        self.assertIn("Como ela surge", cartao)
+        self.assertEqual(fala_e_texto("Pronto.\n\nAbri o Chrome.")[1], "")  # curto: tudo é fala, sem cartão
 
     def test_ajustes_para_voz(self):
         import datetime
