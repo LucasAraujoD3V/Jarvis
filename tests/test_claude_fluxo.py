@@ -90,6 +90,21 @@ class TestClaudeFluxo(unittest.TestCase):
         self.assertEqual(r, "Pronto, abri o Chrome.")
         self.assertNotIn("SEGREDO", "".join(pedacos))
 
+    def test_limite_troca_de_conta_e_avisa(self):
+        self.m.contas = ["", str(self.pasta / "conta2")]
+        pedacos = []
+        r = self.m.perguntar("LIMITE oi", threading.Event(), ao_parcial=pedacos.append)
+        self.assertEqual(r, "Respondido pela conta 2.")
+        self.assertEqual(self.m.conta, 1)
+        self.assertIn("passei para a outra", "".join(pedacos))
+        self.assertTrue(self.m.disponivel)
+
+    def test_limite_sem_outra_conta(self):
+        with self.assertRaises(ErroMotor) as ctx:
+            self.m.perguntar("LIMITE oi", threading.Event())
+        self.assertIn("limite", str(ctx.exception))
+        self.assertFalse(self.m.disponivel)
+
     def test_sem_login_sai_da_fila(self):
         with self.assertRaises(ErroMotor) as ctx:
             self.m.perguntar("LOGIN", threading.Event())

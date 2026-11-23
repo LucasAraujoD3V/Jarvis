@@ -293,6 +293,19 @@ class _Reiniciar(Exception):
         self.ja_falou = ja_falou
 
 
+class _Limite(Exception):
+    """A conta atual do Claude bateu o limite do plano."""
+
+
+_ERRO_LIMITE = re.compile(r"usage limit|limit reached|hit your limit|out of (?:extra )?usage|limite de uso|rate.?limit", re.I)
+
+
+def fim_do_limite(msg: str) -> float:
+    """Quando a conta volta (relógio de parede). O Claude Code manda 'Claude AI usage limit reached|<epoch>'; sem isso, 1 h."""
+    m = re.search(r"\|(\d{10})\b", msg or "")
+    return float(m.group(1)) if m else time.time() + 3600
+
+
 _ERRO_LOGIN = re.compile(r"authenticat|oauth|not logged|log ?in|/login|401|invalid api key", re.I)
 
 
@@ -323,6 +336,11 @@ class MotorClaude:
         self.exe = achar_claude()
         self.prefixo: list[str] | None = None  # testes: [python, claude_falso.py] no lugar do executável
         self._ajuda: str | None = None  # saída do `claude --help` (para só usar flags que essa versão conhece)
+        # Contas do Claude (assinaturas): "" = a padrão (~/.claude); outra = pasta própria via CLAUDE_CONFIG_DIR, logada
+        # uma vez com `$env:CLAUDE_CONFIG_DIR=...; claude.cmd` → /login. Bateu o limite numa, passa para a próxima.
+        self.contas: list[str] = [str(x or "") for x in (c.get("contas") or [""])]
+        self.conta = 0
+        self._limitada_ate: dict[int, float] = {}
         self.nome_assistente = nome_assistente
         self.persona = persona
         self.sessao: str | None = None  # o Assistente grava em preferencias.json → claude_sessao (sobrevive a reinício)
@@ -339,7 +357,20 @@ class MotorClaude:
     # ------------------------------------------------------------------ estado
     @property
     def disponivel(self) -> bool:
-        return bool(self.prefixo or self.exe) and time.monotonic() >= self._sem_login_ate
+        return bool(self.prefixo or self.exe) and time.monotonic() >= self._sem_login_ate and self._conta_livre() is not None
+
+    def _conta_livre(self) -> int | None:
+        agora = time.time()
+        for i in [self.conta] + [j for j in range(len(self.contas)) if j != self.conta]:
+            if self._limitada_ate.get(i, 0) <= agora:
+                return i
+        return None
+
+    def _ambiente(self) -> dict | None:
+        pasta = self.contas[self.conta] if self.conta < len(self.contas) else ""
+        if not pasta:
+            return None
+        return {**os.environ, "CLAUDE_CONFIG_DIR": os.path.expandvars(os.path.expanduser(pasta))}
 
     @property
     def motivo(self) -> str:
@@ -441,7 +472,7 @@ class MotorClaude:
         args = self._comando(retomar)
         proc = subprocess.Popen(args, cwd=str(self.pasta), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, creationflags=SEM_JANELA, text=True, encoding="utf-8",
-                                errors="replace", bufsize=1)
+                                errors="replace", bufsize=1, env=self._ambiente())
         eventos: queue.Queue = queue.Queue()
         threading.Thread(target=self._ler_saida, args=(proc, eventos), name="jarvis-claude-saida", daemon=True).start()
         threading.Thread(target=self._ler_erros, args=(proc,), name="jarvis-claude-erros", daemon=True).start()
@@ -507,7 +538,7 @@ class MotorClaude:
         if not self.disponivel:
             raise ErroMotor(self.motivo)
         with self._trava:
-            for tentativa in (1, 2):
+            for tentativa in range(1, 3 + len(self.contas)):
                 try:
                     if not self.vivo():
                         self._iniciar(retomar=True)
@@ -522,6 +553,17 @@ class MotorClaude:
                     if tentativa == 2 or e.ja_falou:
                         self.ultimo_erro = str(e)
                         raise ErroMotor(f"Claude: {e}") from None
+                except _Limite as e:
+                    self._limitada_ate[self.conta] = fim_do_limite(str(e))
+                    livre = self._conta_livre()
+                    log.warning("Conta %d do Claude bateu o limite; próxima livre: %s", self.conta + 1, livre)
+                    self.encerrar()
+                    if livre is None:
+                        self.ultimo_erro = "todas as contas do Claude bateram o limite"
+                        raise ErroMotor(f"Claude: {self.ultimo_erro}") from None
+                    self.conta, self.sessao = livre, None  # sessão é por conta
+                    if ao_parcial:
+                        ao_parcial("Essa conta do Claude bateu o limite, passei para a outra.\n")
                 except ErroMotor as e:
                     self.ultimo_erro = str(e)
                     raise
@@ -577,6 +619,8 @@ class MotorClaude:
                 self.sessao = ev.get("session_id") or self.sessao
                 if ev.get("is_error"):
                     msg = str(ev.get("result") or ev.get("subtype") or "erro")
+                    if _ERRO_LIMITE.search(msg) and not pedacos:
+                        raise _Limite(msg)
                     if _ERRO_LOGIN.search(msg):
                         self._sem_login_ate = time.monotonic() + 300
                         self.encerrar()

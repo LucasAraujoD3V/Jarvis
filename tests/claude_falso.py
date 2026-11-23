@@ -55,6 +55,14 @@ for linha in sys.stdin:
     if not iniciou:
         ev({"type": "system", "subtype": "init", "model": "falso"})
         iniciou = True
+    if "LIMITE" in conteudo and not os.environ.get("CLAUDE_CONFIG_DIR"):
+        ev({"type": "result", "subtype": "success", "is_error": True, "result": "Claude AI usage limit reached|4102444800"})
+        continue
+    if "LIMITE" in conteudo:
+        resposta = "Respondido pela conta 2."
+        falar(resposta)
+        ev({"type": "result", "subtype": "success", "is_error": False, "result": resposta})
+        continue
     if "LOGIN" in conteudo:
         ev({"type": "assistant", "message": {"content": [{"type": "text", "text": "Failed to authenticate"}]}})
         ev({"type": "result", "subtype": "success", "is_error": True,

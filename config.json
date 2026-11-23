@@ -67,6 +67,7 @@
     "pasta_trabalho": ["~/iCloudDrive/Documentos/Data", "~/OneDrive/Documentos/Data", ".."],
     "usar_mcp": false,
     "modo_limpo": true,
+    "contas": ["", "~/.claude-conta2"],
     "timeout_s": 300
   },
 

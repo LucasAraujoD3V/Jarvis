@@ -155,6 +155,12 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
   neural Antonio do Edge (+8%, -4Hz) e soa robótica para ele. Caminhos: vozes "Multilingual" do próprio Edge (grátis,
   mais naturais), voz local tipo XTTS/F5-TTS, ou pagas (OpenAI/ElevenLabs — fogem da regra "nenhuma API paga").
 
+### Várias contas do Claude (23/11/2026)
+- config.json → claude.contas = ["", "~/.claude-conta2"]: "" = conta padrão (~/.claude); as outras ficam em pasta própria
+  (CLAUDE_CONFIG_DIR). Bateu o limite do plano numa conta → o Jarvis fala "Essa conta do Claude bateu o limite, passei
+  para a outra" e continua na próxima; a que estourou volta sozinha na hora em que o limite reseta.
+- Logar a 2ª conta (uma vez, PowerShell normal): $env:CLAUDE_CONFIG_DIR="$HOME\.claude-conta2"; claude.cmd → /login → /exit.
+
 ### Teste com o Claude real (22/11/2026, notebook) e o que mudou por causa dele
 - Claude em processo fixo, aquecido: 1ª palavra em ~1 s; papo falado em 3,3 s (antes 5,6 s); explicação começa a ser
   falada antes do Claude terminar de escrever (4,5 s); "e o euro?" sem o nome entendeu o contexto.
