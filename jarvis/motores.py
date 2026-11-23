@@ -297,13 +297,26 @@ class _Limite(Exception):
     """A conta atual do Claude bateu o limite do plano."""
 
 
-_ERRO_LIMITE = re.compile(r"usage limit|limit reached|hit your limit|out of (?:extra )?usage|limite de uso|rate.?limit", re.I)
+_ERRO_LIMITE = re.compile(r"usage limit|limit reached|hit your (?:\w+ )?limit|session limit|weekly limit|out of (?:extra )?usage|limite de uso|rate.?limit", re.I)
 
 
 def fim_do_limite(msg: str) -> float:
     """Quando a conta volta (relógio de parede). O Claude Code manda 'Claude AI usage limit reached|<epoch>'; sem isso, 1 h."""
     m = re.search(r"\|(\d{10})\b", msg or "")
-    return float(m.group(1)) if m else time.time() + 3600
+    if m:
+        return float(m.group(1))
+    # formato de 2026: "You've hit your session limit · resets 4:10am (America/Sao_Paulo)"
+    m = re.search(r"resets\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?", msg or "", re.I)
+    if m:
+        h, mi = int(m.group(1)) % 12 if m.group(3) else int(m.group(1)), int(m.group(2) or 0)
+        if (m.group(3) or "").lower() == "pm":
+            h += 12
+        agora = _dt.datetime.now()
+        alvo = agora.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if alvo <= agora:
+            alvo += _dt.timedelta(days=1)
+        return alvo.timestamp()
+    return time.time() + 3600
 
 
 _ERRO_LOGIN = re.compile(r"authenticat|oauth|not logged|log ?in|/login|401|invalid api key", re.I)

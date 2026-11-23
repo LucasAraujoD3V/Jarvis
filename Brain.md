@@ -155,6 +155,15 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
   neural Antonio do Edge (+8%, -4Hz) e soa robótica para ele. Caminhos: vozes "Multilingual" do próprio Edge (grátis,
   mais naturais), voz local tipo XTTS/F5-TTS, ou pagas (OpenAI/ElevenLabs — fogem da regra "nenhuma API paga").
 
+### Conversa (23/11/2026)
+- Rosto só some com "boa noite, Jarvis" (dorme) ou com o botão "–" (volta ao chamar "Jarvis").
+- Interromper: dizer "Jarvis" enquanto ele fala → cala e escuta (o microfone segue ouvindo durante a fala, mas só
+  frase com o nome vale; o resto é eco). Desliga com microfone.interromper_falando = false.
+- Sem fila: pedido novo substitui o que ainda está sendo pensado; se chega em até 4 s, junta com o anterior.
+- Saudação completa só na 1ª vez acordado; depois "Sim?", "Diga." (respostas_curtas).
+- Limite do Claude no formato de 2026 ("You've hit your session limit · resets 4:10am") agora é reconhecido: troca de
+  conta ou sai da fila até o horário de reset (antes tentava o Claude a cada pedido e caía no Codex).
+
 ### Próximos (decididos em 23/11/2026, ainda não feitos)
 - **Voz:** testar Gemini TTS (chave grátis do Google AI Studio, criada pelo Lucas). Até lá fica a voz atual.
 - **Apple:** lembretes via Agenda do iCloud (CalDAV + senha de app gerada pelo Lucas em account.apple.com); Notas e

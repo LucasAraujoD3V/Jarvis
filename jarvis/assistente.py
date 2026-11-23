@@ -244,6 +244,7 @@ class Assistente(QObject):
         self._tentar_de_novo: threading.Timer | None = None
         threading.Thread(target=self._loop, name="jarvis-cerebro", daemon=True).start()
         self._dormindo = False  # "boa noite, Jarvis": só acorda quando ouvir o nome
+        self._saudou = False  # a saudação completa ("Boa noite, Lucas. O que deseja?") é só a 1ª vez acordado
         self._pedido_atual = ""  # o que está sendo pensado agora (para juntar com a continuação da fala)
         self._pedido_t = 0.0
         self._aquecer()
@@ -273,6 +274,13 @@ class Assistente(QObject):
         if isinstance(v, list):
             v = random.choice(v) if v else padrao
         return self._formatar(v)
+
+    def _resposta_ativacao(self) -> str:
+        """1ª vez acordado: saudação completa pelo horário. Depois: só "Sim?" / "Diga." (sem se apresentar de novo)."""
+        if self._saudou:
+            return self._frase_do_config("respostas_curtas", "Sim?")
+        self._saudou = True
+        return self._frase_do_config("respostas_ativacao", "Sim?")
 
     def encerrar(self) -> None:
         """Saída do programa: fecha o processo do Claude que fica aberto entre os pedidos."""
@@ -459,7 +467,7 @@ class Assistente(QObject):
             self._abrir_janela()
             self._definir_estado("atento")
             self.legenda.emit("voce", texto)
-            self.dizer(self._frase_do_config("respostas_ativacao", "Sim?"), abrir_janela=True)
+            self.dizer(self._resposta_ativacao(), abrir_janela=True)
             return
         # sem o nome = veio na janela de seguimento: pode ser comentário ou conversa com outra pessoa
         self._tratar_comando(resto if achou else texto, seguimento=not achou)
@@ -509,11 +517,12 @@ class Assistente(QObject):
             self.conversa.adicionar(cmd, fala, "local")
             self.dizer(fala, abrir_janela=True)
         elif local == "saudacao":  # "bom dia, Jarvis" / "oi, Jarvis"
-            self.dizer(self._frase_do_config("respostas_ativacao", "Sim?"), abrir_janela=True)
+            self.dizer(self._resposta_ativacao(), abrir_janela=True)
         elif local == "desligar":  # "boa noite, Jarvis" / "desliga": dorme (o microfone segue ouvindo só o nome)
             self.parar()
             self._janela_ate = 0
             self._dormindo = True
+            self._saudou = False  # ao acordar, saúda de novo
             self.dizer(self._formatar(random.choice(["{periodo}, {usuario}. Vou descansar. É só me chamar.",
                                                      "Até mais, {usuario}. Qualquer coisa, me chama."])))
         elif local == "reiniciar":

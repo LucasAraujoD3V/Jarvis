@@ -99,6 +99,15 @@ class TestClaudeFluxo(unittest.TestCase):
         self.assertIn("passei para a outra", "".join(pedacos))
         self.assertTrue(self.m.disponivel)
 
+    def test_mensagem_de_limite_de_sessao_2026(self):
+        from jarvis.motores import _ERRO_LIMITE, fim_do_limite
+        import time as _t
+
+        msg = "You've hit your session limit · resets 4:10am (America/Sao_Paulo)"
+        self.assertTrue(_ERRO_LIMITE.search(msg))
+        volta = fim_do_limite(msg)
+        self.assertTrue(_t.time() < volta <= _t.time() + 24 * 3600)
+
     def test_limite_sem_outra_conta(self):
         with self.assertRaises(ErroMotor) as ctx:
             self.m.perguntar("LIMITE oi", threading.Event())

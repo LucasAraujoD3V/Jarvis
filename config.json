@@ -6,6 +6,7 @@
   "idioma": "pt-BR",
   "saudacao": ["{periodo}, {usuario}. Tô online.", "{periodo}, {usuario}. Pronto quando precisar."],
   "respostas_ativacao": ["{periodo}, {usuario}. O que deseja?", "{periodo}, {usuario}. Em que posso ajudar hoje?", "{periodo}. Às suas ordens.", "{periodo}, {usuario}. Pode falar.", "{periodo}! Estou aqui. O que manda?"],
+  "respostas_curtas": ["Sim?", "Pois não?", "Diga.", "Tô ouvindo.", "Pode falar."],
   "iniciar_com_windows": true,
 
   "persona": [
