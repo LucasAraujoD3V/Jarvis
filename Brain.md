@@ -138,6 +138,20 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
 7. Resposta → tira markdown/emojis/links → corta em ~600 caracteres no fim de frase ("O resto está no painel.").
    A troca vai para `conversa.json`.
 
+### Só voz e rosto (22/11/2026, pedido do Lucas)
+- Tela = **só o rosto animado** (HUD; amarelo = pensando). Ao abrir NÃO aparece mais o painel (caixa de texto e botões
+  confundiam: o Jarvis é só por voz). Botão "–" no rosto minimiza; clique no ícone da bandeja mostra de novo.
+- **"Jarvis"** (ou "bom dia/oi, Jarvis") → saudação pelo horário: "Boa noite, Lucas. O que deseja?" (variações em
+  `respostas_ativacao`). **"Boa noite, Jarvis"** / "desliga" → se despede e **dorme**: o microfone segue ouvindo só o
+  nome; "Jarvis" acorda. Fechar de vez só pelo menu da bandeja (Sair).
+- Queda no Python 3.14 (0xc0000005 no GC importando edge_tts/yarl numa thread enquanto outra importava o Whisper):
+  bibliotecas pesadas agora são importadas na thread principal antes das outras threads. `logs/falhas.log` guarda a
+  pilha de qualquer queda nativa (faulthandler).
+- Instalação no notebook: `C:\Users\lucas\Jarvis` (fora do iCloud), Python próprio em `.venv`, iniciar com o Windows ativo.
+- **Fase 2 planejada:** openWakeWord (palavra de ativação local, tem modelo "hey jarvis"), Piper (voz local instantânea
+  pt-BR), comandos diretos do PC sem IA (abrir app, volume, janelas), Whisper na Intel Arc (OpenVINO), memória
+  sincronizada entre PCs.
+
 ### Teste com o Claude real (22/11/2026, notebook) e o que mudou por causa dele
 - Claude em processo fixo, aquecido: 1ª palavra em ~1 s; papo falado em 3,3 s (antes 5,6 s); explicação começa a ser
   falada antes do Claude terminar de escrever (4,5 s); "e o euro?" sem o nome entendeu o contexto.
