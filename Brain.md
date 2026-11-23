@@ -155,6 +155,12 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
   neural Antonio do Edge (+8%, -4Hz) e soa robótica para ele. Caminhos: vozes "Multilingual" do próprio Edge (grátis,
   mais naturais), voz local tipo XTTS/F5-TTS, ou pagas (OpenAI/ElevenLabs — fogem da regra "nenhuma API paga").
 
+### Próximos (decididos em 23/11/2026, ainda não feitos)
+- **Voz:** testar Gemini TTS (chave grátis do Google AI Studio, criada pelo Lucas). Até lá fica a voz atual.
+- **Apple:** lembretes via Agenda do iCloud (CalDAV + senha de app gerada pelo Lucas em account.apple.com); Notas e
+  Lembretes da Apple não têm API pública — notas via Atalho no iPhone lendo uma pasta do iCloud Drive.
+- Logar a 2ª conta do Claude (comando abaixo).
+
 ### Várias contas do Claude (23/11/2026)
 - config.json → claude.contas = ["", "~/.claude-conta2"]: "" = conta padrão (~/.claude); as outras ficam em pasta própria
   (CLAUDE_CONFIG_DIR). Bateu o limite do plano numa conta → o Jarvis fala "Essa conta do Claude bateu o limite, passei
