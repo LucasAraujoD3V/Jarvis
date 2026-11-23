@@ -130,6 +130,13 @@ def sondar_cuda(modelo: str, raiz: Path, timeout_s: float = 600) -> tuple[bool, 
     return False, erro[:200]
 
 
+def maquina() -> str:
+    """Nome deste computador (o resultado do teste da GPU vale só para ele)."""
+    import platform
+
+    return platform.node() or os.environ.get("COMPUTERNAME", "") or "este-pc"
+
+
 def versao_ct2() -> str:
     try:
         import ctranslate2
@@ -238,26 +245,49 @@ class Transcritor:
         if self.usar_gpu and self.motor != "google":
             dispositivo = "cuda" if self._gpu_ok() else "cpu"
         self.whisper = Whisper(self.modelo, dispositivo, dica=self.dica, idioma=self.idioma.split("-")[0])
+        try:
+            self.whisper.carregar()  # já deixa na memória (1ª vez baixa o modelo: ~480 MB o "small")
+        except Exception as e:  # noqa: BLE001
+            if dispositivo != "cuda":
+                raise
+            # passou no teste mas não carregou agora (driver mudou, outra máquina...): fica na CPU, sem sumir
+            log.warning("Whisper na GPU não carregou (%s); usando a CPU", e)
+            self._salvar_gpu(False, f"não carregou: {e}"[:200])
+            dispositivo = "cpu"
+            self.whisper = Whisper(self.modelo, "cpu", dica=self.dica, idioma=self.idioma.split("-")[0])
+            self.whisper.carregar()
         if self.motor == "whisper" or (self.motor == "auto" and dispositivo == "cuda"):
             self.principal = "whisper"
         else:
             self.principal = "google"
-        self.whisper.carregar()  # já deixa na memória (1ª vez baixa o modelo: ~480 MB o "small")
         reserva = ("Whisper" if self.principal == "google" else "Google") if self.reserva else "nenhuma"
         self.descricao = (f"Whisper {self.modelo} ({'GPU' if dispositivo == 'cuda' else 'CPU'})"
                           if self.principal == "whisper" else "Google") + f", reserva: {reserva}"
         self.ao_aviso(f"Transcrição: {self.descricao}.")
 
+    def _gpus_salvas(self) -> dict:
+        """preferencias.json → whisper_cuda = {nome_do_computador: resultado}. Por computador porque o Jarvis roda em
+        mais de um (PC fixo com NVIDIA, notebook sem) e a pasta pode ser a mesma, sincronizada."""
+        todas = (self.prefs.get("whisper_cuda") if self.prefs is not None else None) or {}
+        if not isinstance(todas, dict) or "ok" in todas:  # formato antigo (um resultado só, sem dizer de que PC)
+            return {}
+        return dict(todas)
+
+    def _salvar_gpu(self, ok: bool, detalhe: str) -> None:
+        if self.prefs is None:
+            return
+        todas = self._gpus_salvas()
+        todas[maquina()] = {"ok": ok, "ct2": versao_ct2(), "modelo": self.modelo, "detalhe": detalhe}
+        self.prefs.set("whisper_cuda", todas)
+
     def _gpu_ok(self) -> bool:
-        ct2 = versao_ct2()
-        salvo = (self.prefs.get("whisper_cuda") if self.prefs is not None else None) or {}
-        if salvo.get("ct2") == ct2 and salvo.get("modelo") == self.modelo and "ok" in salvo:
+        salvo = self._gpus_salvas().get(maquina()) or {}
+        if salvo.get("ct2") == versao_ct2() and salvo.get("modelo") == self.modelo and "ok" in salvo:
             return bool(salvo["ok"])
-        self.ao_aviso("Testando a placa de vídeo para o Whisper (só na 1ª vez; pode baixar o modelo)…")
+        self.ao_aviso("Testando a placa de vídeo deste computador para o Whisper (só na 1ª vez)…")
         ok, detalhe = sondar_cuda(self.modelo, self.raiz)
-        log.info("Sonda CUDA do Whisper: %s (%s)", ok, detalhe)
-        if self.prefs is not None:
-            self.prefs.set("whisper_cuda", {"ok": ok, "ct2": ct2, "modelo": self.modelo, "detalhe": detalhe})
+        log.info("Sonda CUDA do Whisper em %s: %s (%s)", maquina(), ok, detalhe)
+        self._salvar_gpu(ok, detalhe)
         return ok
 
     # ------------------------------------------------------------------ uso (thread de transcrição)

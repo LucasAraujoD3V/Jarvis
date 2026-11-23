@@ -58,8 +58,11 @@ def regras_voz(nome: str, persona: list[str]) -> str:
         *persona,
         "Responda sempre em português do Brasil.",
         "Sua resposta será lida em voz alta por síntese de voz, então: nada de markdown, listas, tabelas, emojis, código ou links.",
-        "Por padrão, de uma a três frases; mais só se pedirem detalhes ou explicação.",
+        "IMPORTANTE: isto é conversa falada. Responda como alguém falando: no máximo 3 frases curtas (umas 50 palavras), "
+        "mesmo para explicações. Nada de listas, tópicos ou títulos ('Principais causas:'). Só se estenda se ele pedir "
+        "detalhes com todas as letras ('explica em detalhes', 'me dá a lista completa').",
         "Escreva em letras normais, nunca tudo em maiúsculas. Horas no formato de 24 horas. Números por extenso só se forem curtos.",
+        "Fale datas como gente ('hoje', '22 de novembro'), nunca em números com barra, e evite parênteses.",
         "Nem toda fala é um pedido. Comentário, reação ou elogio (ex.: 'agora sim hein', 'boa', 'show', 'nossa', "
         "'que legal', 'ficou bom') recebe resposta curta e natural, como uma pessoa responderia ('Que bom!', "
         "'Pois é.', 'Às ordens.'), levando em conta a conversa recente. Nunca responda 'não entendi o pedido' "
@@ -79,6 +82,8 @@ REGRAS_ACAO = (
     "Nada irreversível (apagar, enviar mensagem ou e-mail, publicar, comprar, mexer em servidor de produção) sem "
     "perguntar antes e ouvir um sim.",
     "Os pedidos chegam por voz (transcrição automática: pode haver palavras trocadas, interprete pelo sentido).",
+    "Quando pesquisar na web, dê só a resposta: não liste fontes, links nem 'Sources' (tudo que você escreve é falado).",
+    "Se não achar o que pediram em poucos segundos, pergunte em vez de vasculhar o disco inteiro: ele está esperando ouvir.",
 )
 
 
@@ -306,10 +311,14 @@ class MotorClaude:
         self.modelo = c.get("modelo") or ""
         self.permissao = c.get("permissao") or "auto"
         self.usar_mcp = bool(c.get("usar_mcp", False))
+        # --safe-mode: sem CLAUDE.md global, plugins, skills e hooks do Claude Code do usuário (são regras do chat de
+        # programação: "commita e dá push", "descobre o repo pelo git"...). Medido em 22/11: contexto 51k → 32k tokens.
+        self.modo_limpo = bool(c.get("modo_limpo", True))
         self.timeout_s = float(c.get("timeout_s", 300))
         self.pasta = pasta_trabalho
         self.exe = achar_claude()
         self.prefixo: list[str] | None = None  # testes: [python, claude_falso.py] no lugar do executável
+        self._ajuda: str | None = None  # saída do `claude --help` (para só usar flags que essa versão conhece)
         self.nome_assistente = nome_assistente
         self.persona = persona
         self.sessao: str | None = None  # o Assistente grava em preferencias.json → claude_sessao (sobrevive a reinício)
@@ -373,9 +382,41 @@ class MotorClaude:
 
     def _sistema(self) -> str:
         """Fixo enquanto o processo vive: quem ele é + regras de ação + memória do momento da partida."""
-        s = regras_voz(self.nome_assistente, self.persona) + "\n" + "\n".join(REGRAS_ACAO)
+        s = (regras_voz(self.nome_assistente, self.persona) + "\n" + "\n".join(REGRAS_ACAO)
+             + f"\nSua pasta atual é {self.pasta}: é onde ficam os projetos do usuário. Pasta ou arquivo que ele citar "
+             "(ex.: 'o projeto Kairos', 'a pasta x/y') está ali dentro: rode `ls` na pasta atual ANTES de qualquer busca. "
+             "Nunca comece com `find ~` ou busca no disco inteiro; só procure fora se ele pedir.")
+        conteudo = self._conteudo_pasta()
+        if conteudo:
+            s += f"\nO que tem na pasta atual agora (caminhos relativos a ela): {conteudo}."
         mem = self._memoria_texto()
         return s + ("\n\n" + mem if mem else "")
+
+    def _conteudo_pasta(self, limite: int = 80) -> str:
+        """Nível de cima da pasta de trabalho (pastas primeiro). Num teste real, só a regra "olhe a pasta atual" não
+        bastou: o Claude saiu varrendo o disco (174 s). Com a lista no prompt ele já sabe onde está cada projeto."""
+        try:
+            itens = [p for p in self.pasta.iterdir() if not p.name.startswith((".", "__"))]
+        except OSError:
+            return ""
+        itens.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
+        nomes = [p.name + ("/" if p.is_dir() else "") for p in itens[:limite]]
+        if len(itens) > limite:
+            nomes.append(f"... e mais {len(itens) - limite}")
+        return ", ".join(nomes)
+
+    def suporta(self, flag: str) -> bool:
+        """Essa versão do Claude Code conhece a flag? (uma flag desconhecida faria o processo sair na hora)"""
+        if self.prefixo:
+            return True
+        if self._ajuda is None:
+            try:
+                r = subprocess.run([self.exe, "--help"], capture_output=True, text=True, timeout=30,
+                                   creationflags=SEM_JANELA, encoding="utf-8", errors="replace")
+                self._ajuda = (r.stdout or "") + (r.stderr or "")
+            except (OSError, subprocess.TimeoutExpired):
+                self._ajuda = ""
+        return flag in self._ajuda
 
     def _comando(self, retomar: bool) -> list[str]:
         args = [*(self.prefixo or [self.exe]), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -385,6 +426,8 @@ class MotorClaude:
             args += ["--model", self.modelo]
         if not self.usar_mcp:
             args += ["--strict-mcp-config"]
+        if self.modo_limpo and self.suporta("--safe-mode"):
+            args += ["--safe-mode"]
         if retomar and self.sessao:
             args += ["--resume", self.sessao]
         return args

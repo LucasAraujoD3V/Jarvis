@@ -368,6 +368,30 @@ def escolher_motor(texto: str, modo: str, disponiveis: set[str], extras: list[st
 
 # --------------------------------------------------------------------------------------------- texto para fala
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿️‍]")
+_DATA = re.compile(r"\(?\b(\d{1,2})/(\d{1,2})/(\d{4})\b\)?")
+_PALAVRA_BARRA = re.compile(r"(?<![\w/\\-])([A-Za-zÀ-ÿ]{3,})/([A-Za-zÀ-ÿ]{3,})(?![\w/\\])")
+
+
+def ajustar_para_voz(t: str) -> str:
+    """O que a IA escreve para ler e soa mal falado: '(22/11/2026)' → ', 22 de novembro,'; '~R$ 6' → 'cerca de R$ 6';
+    'turismo/cartão' → 'turismo ou cartão'."""
+    import datetime as _dt
+
+    ano_atual = _dt.date.today().year
+
+    def data(m: re.Match) -> str:
+        d, mes, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if not (1 <= mes <= 12 and 1 <= d <= 31):
+            return m.group(0)
+        falada = f"{d} de {MESES[mes - 1]}" + ("" if ano == ano_atual else f" de {ano}")
+        return f", {falada}," if m.group(0).startswith("(") else falada
+
+    t = _DATA.sub(data, t)
+    t = re.sub(r"~\s*(?=R\$|\d)", "cerca de ", t)
+    t = _PALAVRA_BARRA.sub(r"\1 ou \2", t)
+    t = re.sub(r"\s+,", ",", t)
+    t = re.sub(r",\s*,", ",", t)
+    return t
 
 
 def limpar_markdown(t: str) -> str:
@@ -385,6 +409,7 @@ def limpar_markdown(t: str) -> str:
     t = re.sub(r"https?://\S+", " ", t)
     t = re.sub(r"[-=_*]{3,}", " ", t)
     t = _EMOJI.sub("", t)
+    t = ajustar_para_voz(t)
     # quebra de linha sem pontuação vira ponto, para a voz respirar
     linhas = [ln.strip() for ln in t.splitlines() if ln.strip()]
     t = " ".join(ln if re.search(r"[.!?:;,]$", ln) else ln + "." for ln in linhas)
@@ -420,6 +445,33 @@ def dividir_frases(texto: str, max_trecho: int = 220) -> list[str]:
 
 _FIM_FRASE = re.compile(r"(?<=[.!?…])\s+|\n+")
 _SO_NUMERO = re.compile(r"\d+[.)]?")
+# A busca na web do Claude Code manda terminar com "Sources:" + links. Isso vai para o painel, nunca para a voz.
+_FONTES = re.compile(r"^\W*(sources|fontes|refer[eê]ncias|links)\W*$", re.I)
+_FONTES_BLOCO = re.compile(r"\n\s*\W*(?:sources|fontes|refer[eê]ncias)\W*\s*\n[\s\S]*$", re.I)
+
+
+def tirar_fontes(texto: str) -> str:
+    """Corta o bloco final de fontes ('Sources:' seguido de links)."""
+    return _FONTES_BLOCO.sub("", texto or "")
+
+
+def partir_frase(frase: str, max_chars: int = 110) -> list[str]:
+    """Frase longa demora a sintetizar (~1,4 s para 190 letras): parte na vírgula/ponto e vírgula/travessão mais perto do
+    limite; sem pontuação, no último espaço. A 1ª parte sai antes e a voz começa mais cedo."""
+    partes = []
+    f = frase.strip()
+    while len(f) > max_chars:
+        trecho = f[:max_chars]
+        corte = max(trecho.rfind(", "), trecho.rfind("; "), trecho.rfind(" — "), trecho.rfind(" – "))
+        if corte < 35:
+            corte = trecho.rfind(" ")
+        if corte < 35:
+            break
+        partes.append(f[:corte + 1].strip(" ,;—–"))
+        f = f[corte + 1:].strip(" ,;—–")
+    if f:
+        partes.append(f)
+    return partes
 
 
 class DivisorFala:
@@ -430,13 +482,15 @@ class DivisorFala:
     de entregar e marca `cortado` (o resto fica no painel).
     """
 
-    def __init__(self, max_chars: int = 600, agrupar: int = 170):
+    def __init__(self, max_chars: int = 600, agrupar: int = 170, max_trecho: int = 110):
         self.max_chars = max_chars
         self.agrupar = agrupar
+        self.max_trecho = max_trecho
         self._buf = ""
         self._falados = 0
         self._primeira = True
         self.cortado = False
+        self.fontes = False  # chegou o bloco "Sources:": dali para frente nada é falado
 
     def alimentar(self, pedaco: str) -> list[str]:
         self._buf += pedaco or ""
@@ -446,7 +500,7 @@ class DivisorFala:
         return self._extrair(final=True)
 
     def _extrair(self, final: bool) -> list[str]:
-        if self.cortado:
+        if self.cortado or self.fontes:
             self._buf = ""
             return []
         self._buf = re.sub(r"```[\s\S]*?```", "\n", self._buf)  # bloco de código completo: não se fala
@@ -462,6 +516,10 @@ class DivisorFala:
         saida: list[str] = []
         grupo = ""
         for p in completas:
+            if _FONTES.match(p.strip()):
+                self.fontes = True
+                self._buf = ""
+                break
             f = limpar_markdown(p)
             if not f or _SO_NUMERO.fullmatch(f):
                 continue
@@ -470,22 +528,28 @@ class DivisorFala:
                 self._buf = ""
                 break
             self._falados += len(f) + 1
-            if self._primeira:
-                self._primeira = False
-                saida.append(f)
-            elif grupo and len(grupo) + 1 + len(f) > self.agrupar:
-                saida.append(grupo)
-                grupo = f
-            else:
-                grupo = f"{grupo} {f}".strip()
+            for parte in partir_frase(f, self.max_trecho):
+                if self._primeira:
+                    self._primeira = False
+                    saida.append(parte)
+                elif grupo and len(grupo) + 1 + len(parte) > self.agrupar:
+                    saida.append(grupo)
+                    grupo = parte
+                elif len(parte) > self.max_trecho * 0.6:  # parte de frase longa: sai sozinha (síntese mais curta)
+                    if grupo:
+                        saida.append(grupo)
+                    saida.append(parte)
+                    grupo = ""
+                else:
+                    grupo = f"{grupo} {parte}".strip()
         if grupo:
             saida.append(grupo)
         return saida
 
 
 def limpar_para_fala(texto: str, max_chars: int = 600) -> tuple[str, bool]:
-    """Devolve (texto_para_falar, cortado?). Corta no fim de frase antes do limite."""
-    t = limpar_markdown(texto)
+    """Devolve (texto_para_falar, cortado?). Corta no fim de frase antes do limite. Fontes ('Sources:') não são faladas."""
+    t = limpar_markdown(tirar_fontes(texto))
     if len(t) <= max_chars:
         return t, False
     frases = [f.strip() for f in re.split(r"(?<=[.!?])\s+", t) if f.strip()]

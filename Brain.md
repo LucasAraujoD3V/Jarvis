@@ -37,8 +37,12 @@ perguntar ao Spider qual conta usar, e o Spider mostrar as IAs do Jarvis na teia
    reiniciar o Jarvis pela bandeja. Na 1ª vez ele baixa o Whisper "small" (~480 MB) e testa a placa de vídeo.
 2. **GPU para o Whisper (opcional, recomendado):** `pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"` (~1,5 GB) e
    apagar `whisper_cuda` do `preferencias.json` para ele testar de novo. Sem isso o Whisper roda na CPU só como reserva.
-3. **Conferir o login do Claude Code no PC fixo** (`claude` no terminal; se pedir, `/login`). Sem login o Jarvis avisa
-   "Claude sem login" e responde pelas reservas. No notebook (22/11) o login estava vencido.
+3. **Conferir o login do Claude Code no PC fixo** (`claude.cmd` no terminal; se pedir, `/login`). Sem login o Jarvis
+   avisa "Claude sem login" e responde pelas reservas. No PowerShell, `claude` sozinho é bloqueado pela política de
+   scripts (`claude.ps1`): use `claude.cmd`. No notebook o login foi refeito em 22/11.
+   **Pasta do Jarvis no iCloud esvaziou em 21/11 às 01:22** (no notebook só sobraram pastas vazias, e há uma `jarvis`
+   vazia na lixeira do iCloud com a mesma hora). Se o PC fixo roda dessa pasta, conferir; o código está no GitHub, mas
+   `memoria.json`/`preferencias.json`/`.env` não (são locais). Instalar fora do iCloud: `C:\Users\<usuário>\Jarvis`.
 4. Testar pela voz de verdade no PC fixo: escuta (Whisper/Google), streaming do Claude, personalidade. Ainda não feito.
 5. **Login do Gemini** e **chave NVIDIA nova** viraram opcionais (só reserva). Gemini: `& "$HOME\.local\npm\gemini.cmd"`
    → Login with Google. NVIDIA: build.nvidia.com → colar no painel → `python ferramentas/comparar_modelos.py`.
@@ -133,6 +137,23 @@ segue o microfone) · `pensando` (âmbar, giro rápido + cometa) · `falando` (c
    **Outras IAs (sem streaming):** IA lenta em pedido que não é papo ganha a prévia falada enquanto espera.
 7. Resposta → tira markdown/emojis/links → corta em ~600 caracteres no fim de frase ("O resto está no painel.").
    A troca vai para `conversa.json`.
+
+### Teste com o Claude real (22/11/2026, notebook) e o que mudou por causa dele
+- Claude em processo fixo, aquecido: 1ª palavra em ~1 s; papo falado em 3,3 s (antes 5,6 s); explicação começa a ser
+  falada antes do Claude terminar de escrever (4,5 s); "e o euro?" sem o nome entendeu o contexto.
+- **`--safe-mode`** (`claude.modo_limpo`, padrão true; só usado se o `claude --help` conhecer a flag): sem o CLAUDE.md
+  global, plugins (superpowers), skills e hooks do Claude Code do Lucas — contexto 51k → 32k tokens. Com eles o Claude do
+  Jarvis seguia regras do chat de programação ("descobre o repo pelo git") e saía varrendo o disco.
+- O Claude recebe no prompt **a lista do nível de cima da pasta de trabalho** e a ordem de dar `ls` nela antes de
+  qualquer busca. Só a regra não bastou: num teste ele rodou `find ~` e levou 174 s.
+- `claude.pasta_trabalho` aceita lista (vale a 1ª que existir no PC): iCloud Data → OneDrive Data → `..`.
+- Fala: "Sources:" e links da busca na web não são falados; frase longa é partida em ~110 letras (síntese mais rápida);
+  "(22/11/2026)" → "22 de novembro", "~R$" → "cerca de R$", "turismo/cartão" → "turismo ou cartão". Regra de no máximo
+  3 frases mais forte (ele fazia listas com "Principais causas:").
+- Fala em fluxo com ferramentas: o que ele diz antes da 1ª ferramenta sai na hora (antes esperava a ferramenta acabar);
+  narração entre ferramentas só vira fala depois de 10 s de silêncio (1ª frase); a resposta final sempre é falada.
+- Teste da GPU do Whisper guardado **por computador** (`preferencias.json → whisper_cuda → {nome_do_pc: ...}`); se a GPU
+  não carregar, o Whisper cai para a CPU.
 
 ### Transcrição (22/11/2026) — `config.json → transcricao`
 - `motor: "auto"`: testa a placa NVIDIA **num processo separado** (falta de DLL do CUDA pode derrubar o processo) e
@@ -231,7 +252,7 @@ O mesmo vale para `pip install` feito de dentro do app: rode no terminal normal.
 - No Windows 11 o ícone novo da bandeja nasce escondido em "^": arraste para a barra uma vez.
 
 ## Testes
-- `python -m unittest discover -s tests -v` — 90 testes (ativação, comandos locais, hora/data, roteamento com Claude
+- `python -m unittest discover -s tests -v` — 99 testes (era 90 antes do teste com o Claude real) (ativação, comandos locais, hora/data, roteamento com Claude
   primeiro, memória e conversa em disco, memória no prompt de cada IA, CLI pelo stdin e só com login, limpeza de fala,
   DivisorFala, motor Nemotron sem rede, **MotorClaude em processo fixo** com um Claude falso (`tests/claude_falso.py`,
   imita o stream-json real: streaming, sessão, retomada, sem login, processo morrendo, cancelar), transcrição

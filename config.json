@@ -64,8 +64,9 @@
   "claude": {
     "modelo": "sonnet",
     "permissao": "auto",
-    "pasta_trabalho": "..",
+    "pasta_trabalho": ["~/iCloudDrive/Documentos/Data", "~/OneDrive/Documentos/Data", ".."],
     "usar_mcp": false,
+    "modo_limpo": true,
     "timeout_s": 300
   },
 

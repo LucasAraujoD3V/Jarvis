@@ -63,10 +63,18 @@ def periodo_do_dia(hora: int) -> str:
 
 class FalaEmFluxo:
     """
-    Fala a resposta ENQUANTO a IA ainda escreve (Claude em streaming): cada frase pronta vai para a voz na hora.
-    Uma por pedido. Segura a 1ª frase até saber que não é IGNORAR (fala que não era para o Jarvis). Se a IA for usar
-    uma ferramenta sem ter dito nada, fala a prévia ("Abrindo.") para não ficar mudo.
+    Fala a resposta ENQUANTO a IA ainda escreve (Claude em streaming). Uma por pedido.
+    - Antes da 1ª ferramenta: cada frase pronta vai para a voz na hora. Segura a 1ª até saber que não é IGNORAR.
+      Quando a 1ª ferramenta começa, fala na hora o que ele já tinha dito ("Vou procurar a pasta.") — antes a frase
+      só saía quando chegava o próximo texto, depois da ferramenta (126 s num teste real). Se não tinha dito nada, fala
+      a prévia ("Abrindo.").
+    - Entre ferramentas: a narração ("a busca ficou lenta, vou tentar outro caminho") fica só no painel; só vira fala
+      (a 1ª frase) se ele estiver há `SILENCIO_MAX_S` sem dizer nada, para mostrar que continua trabalhando.
+    - Depois da última ferramenta: a resposta final é SEMPRE falada, com o limite de fala contando do zero (num teste
+      real a narração gastou o limite e "São 15 arquivos" não foi dito).
     """
+
+    SILENCIO_MAX_S = 10.0
 
     def __init__(self, assistente: "Assistente", previa: str = ""):
         self.a = assistente
@@ -77,6 +85,9 @@ class FalaEmFluxo:
         self.comecou = False
         self._decidido = False
         self._thread: threading.Thread | None = None
+        self._usou_ferramenta = False
+        self._bloco = ""  # texto escrito depois da última ferramenta (narração ou resposta final)
+        self._ultima_fala = time.monotonic()
 
     def _enviar(self, frases: list[str]) -> None:
         for f in frases:
@@ -90,21 +101,44 @@ class FalaEmFluxo:
                 self._thread = threading.Thread(target=self._falar, name="jarvis-fala-fluxo", daemon=True)
                 self._thread.start()
             self.comecou = True
+            self._ultima_fala = time.monotonic()
             self.fila.put(f)
 
     def parcial(self, pedaco: str) -> None:
-        self._enviar(self.divisor.alimentar(pedaco))
+        if self._usou_ferramenta:
+            self._bloco += pedaco
+        else:
+            self._enviar(self.divisor.alimentar(pedaco))
 
     def ferramenta(self, _nome: str) -> None:
-        if not self.comecou and self.previa and not self.ignorar:
-            self._decidido = True
-            self._enviar([self.previa])
+        if self.ignorar:
+            return
+        if not self._usou_ferramenta:
+            self._usou_ferramenta = True
+            self._enviar(self.divisor.terminar())  # o que ele disse antes da ferramenta sai agora, não depois dela
+            if not self.comecou and self.previa:
+                self._decidido = True
+                self._enviar([self.previa])
             self.previa = ""
+            return
+        narracao, self._bloco = self._bloco, ""
+        if narracao.strip() and time.monotonic() - self._ultima_fala >= self.SILENCIO_MAX_S:
+            frases = DivisorFala(self.a.max_fala).alimentar(narracao + "\n")
+            if frases:
+                self._decidido = True
+                self._enviar(frases[:1])  # "ainda estou nisso": só a 1ª frase da narração
 
     def terminar(self) -> bool:
         """A IA acabou: fala o que sobrou e espera a voz terminar. True = falou alguma coisa."""
-        self._enviar(self.divisor.terminar())
-        if self.divisor.cortado and self.comecou:
+        if self._usou_ferramenta:
+            final = DivisorFala(self.a.max_fala)  # resposta final: limite de fala novo
+            self._decidido = True
+            self._enviar(final.alimentar(self._bloco) + final.terminar())
+            cortado = final.cortado
+        else:
+            self._enviar(self.divisor.terminar())
+            cortado = self.divisor.cortado
+        if cortado and self.comecou:
             self.fila.put("O resto está no painel.")
         return self._fechar()
 
@@ -151,7 +185,11 @@ class Assistente(QObject):
         # quem o Jarvis é (config.json → persona). O antigo "estilo_resposta" (regras de economia de token pensadas para
         # o chat do Claude Code) NÃO é mais lido: deixava a fala robótica ("Eu corrigir código").
         persona = [self._formatar(linha) for linha in (cfg.get("persona") or [])]
-        pasta = caminho(cfg.get("claude", {}).get("pasta_trabalho", ".."))
+        # pasta onde as IAs trabalham: lista de candidatas, vale a 1ª que existir neste PC (o Jarvis roda em mais de um
+        # computador e a pasta Data fica em lugares diferentes)
+        candidatas = cfg.get("claude", {}).get("pasta_trabalho", "..")
+        candidatas = candidatas if isinstance(candidatas, list) else [candidatas]
+        pasta = next((caminho(c) for c in candidatas if caminho(c).is_dir()), caminho(".."))
 
         # memória (fatos ensinados) e conversa (últimas trocas): em disco, valem para todas as IAs
         self.memoria = Memoria(RAIZ / "memoria.json")

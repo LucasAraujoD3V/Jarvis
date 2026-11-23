@@ -57,8 +57,23 @@ class TestClaudeFluxo(unittest.TestCase):
         self.assertIn("Start-Process", sistema)
         self.assertIn("expresso", sistema)
         self.assertNotIn("3 a 6 palavras", sistema)
-        for flag in ("--input-format", "--include-partial-messages", "--strict-mcp-config"):
+        for flag in ("--input-format", "--include-partial-messages", "--strict-mcp-config", "--safe-mode"):
             self.assertIn(flag, args)
+        self.assertIn(f"Sua pasta atual é {self.pasta}", sistema)
+        self.assertIn("O que tem na pasta atual agora", sistema)
+        self.assertIn("memoria.json", sistema)  # lista o nível de cima da pasta de trabalho
+        self.assertIn("ANTES de qualquer busca", sistema)
+        self.assertIn("não liste fontes", sistema)
+
+    def test_safe_mode_so_se_a_versao_conhece(self):
+        m = MotorClaude({}, self.pasta, "Jarvis", [])
+        m.exe = "claude"
+        m._ajuda = "  --model <model>\n  --resume\n"  # versão antiga, sem --safe-mode
+        self.assertNotIn("--safe-mode", m._comando(retomar=False))
+        m._ajuda = "  --safe-mode   Start with all customizations disabled\n"
+        self.assertIn("--safe-mode", m._comando(retomar=False))
+        m.modo_limpo = False
+        self.assertNotIn("--safe-mode", m._comando(retomar=False))
 
     def test_memoria_nova_vai_na_mensagem_sem_reiniciar(self):
         self.m.perguntar("oi", threading.Event())

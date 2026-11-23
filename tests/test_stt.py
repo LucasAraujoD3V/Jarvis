@@ -88,6 +88,43 @@ class TestReserva(unittest.TestCase):
         self.assertEqual(t.transcrever(np.zeros(1600, dtype=np.int16)), "")
 
 
+class Prefs(dict):
+    def set(self, k, v):
+        self[k] = v
+
+
+class TestGpuPorComputador(unittest.TestCase):
+    """O Jarvis roda em mais de um PC: o teste da NVIDIA de um não pode valer para o outro."""
+
+    def setUp(self):
+        import jarvis.stt as stt
+
+        self.stt = stt
+        self.sondas = []
+        self._original = stt.sondar_cuda
+        stt.sondar_cuda = lambda modelo, raiz, timeout_s=600: (self.sondas.append(modelo) or (False, "sem placa NVIDIA"))
+
+    def tearDown(self):
+        self.stt.sondar_cuda = self._original
+
+    def test_resultado_de_outro_pc_nao_vale_aqui(self):
+        prefs = Prefs(whisper_cuda={"PC-FIXO": {"ok": True, "ct2": self.stt.versao_ct2(), "modelo": "small"}})
+        t = Transcritor({}, "pt-BR", "Jarvis", lambda m: None, prefs=prefs)
+        self.assertFalse(t._gpu_ok())  # este PC é testado de novo, não herda o "tem NVIDIA" do outro
+        self.assertEqual(len(self.sondas), 1)
+        self.assertIn("PC-FIXO", prefs["whisper_cuda"])
+        self.assertIn(self.stt.maquina(), prefs["whisper_cuda"])
+        self.assertFalse(t._gpu_ok())  # segunda vez usa o salvo, sem testar de novo
+        self.assertEqual(len(self.sondas), 1)
+
+    def test_formato_antigo_e_ignorado(self):
+        prefs = Prefs(whisper_cuda={"ok": True, "ct2": "x", "modelo": "small"})
+        t = Transcritor({}, "pt-BR", "Jarvis", lambda m: None, prefs=prefs)
+        t._gpu_ok()
+        self.assertEqual(len(self.sondas), 1)
+        self.assertNotIn("ok", prefs["whisper_cuda"])
+
+
 class TestFalaEmFila(unittest.TestCase):
     """Falante.falar_fila com síntese e reprodução trocadas por falsas (sem som, sem rede)."""
 
@@ -156,6 +193,37 @@ class TestFalaEmFluxo(unittest.TestCase):
         self.assertEqual(ditos, [])
         self.assertTrue(f.ignorar)
         self.assertEqual(mudo, [])
+
+    def test_frase_antes_da_ferramenta_sai_na_hora(self):
+        # bug real (22/11): "Vou procurar a pasta." só saía quando chegava texto novo, depois da ferramenta
+        f, ditos, _ = self.fluxo(previa="Abrindo.")
+        f.parcial("Vou procurar a pasta.")  # sem espaço depois: a frase ainda não "fechou"
+        f.ferramenta("Bash")
+        self.assertEqual(list(f.fila.queue), ["Vou procurar a pasta."])  # já foi para a voz, sem prévia
+        f.parcial("\nSão 15 arquivos.")
+        f.terminar()
+        self.assertEqual(ditos, ["Vou procurar a pasta.", "São 15 arquivos."])
+
+    def test_narracao_entre_ferramentas_nao_gasta_a_fala_final(self):
+        f, ditos, _ = self.fluxo()
+        f.parcial("Vou procurar.")
+        f.ferramenta("Bash")
+        f.parcial("\nA busca ficou lenta, foi pra background. " * 20)  # narração longa no meio
+        f.ferramenta("Bash")  # menos de 10 s desde a última fala: narração não é falada
+        f.parcial("\nSão 15 arquivos.")
+        f.terminar()
+        self.assertEqual(ditos, ["Vou procurar.", "São 15 arquivos."])
+
+    def test_narracao_vira_aviso_depois_de_muito_silencio(self):
+        f, ditos, _ = self.fluxo()
+        f.parcial("Vou procurar.")
+        f.ferramenta("Bash")
+        f._ultima_fala -= 30  # 30 s mudo
+        f.parcial("\nAinda procurando, a busca está lenta. Vou tentar outro caminho.")
+        f.ferramenta("Bash")
+        f.parcial("\nAchei.")
+        f.terminar()
+        self.assertEqual(ditos, ["Vou procurar.", "Ainda procurando, a busca está lenta.", "Achei."])
 
     def test_ferramenta_sem_texto_fala_previa_uma_vez(self):
         f, ditos, _ = self.fluxo(previa="Abrindo.")

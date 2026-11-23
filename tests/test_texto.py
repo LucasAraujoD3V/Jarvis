@@ -217,6 +217,36 @@ class TestDivisorFala(unittest.TestCase):
         self.assertEqual(alimentar_aos_poucos(DivisorFala(), "Duas coisas. 1. Login quebrado."),
                          ["Duas coisas.", "Login quebrado."])
 
+    def test_fontes_da_busca_nao_sao_faladas(self):
+        # formato real do Claude Code com busca na web (22/11/2026)
+        texto = ("O dólar comercial está em torno de R$ 5,94.\n\nSources:\n- [Dólar Hoje](https://dolarhoje.com/)\n"
+                 "- [Investidor10](https://investidor10.com.br/moedas/usd/)")
+        d = DivisorFala()
+        self.assertEqual(alimentar_aos_poucos(d, texto), ["O dólar comercial está em torno de R$ 5,94."])
+        self.assertTrue(d.fontes)
+        self.assertFalse(d.cortado)  # não é corte por tamanho: não diz "o resto está no painel"
+        self.assertEqual(limpar_para_fala(texto)[0], "O dólar comercial está em torno de R$ 5,94.")
+
+    def test_ajustes_para_voz(self):
+        import datetime
+
+        ano = datetime.date.today().year
+        # frase real do Claude com busca na web (22/11/2026)
+        self.assertEqual(limpar_para_fala(f"O dólar hoje (22/11/{ano}) está em ~R$ 5,95, no turismo/cartão até ~R$ 6,18.")[0],
+                         "O dólar hoje, 22 de novembro, está em cerca de R$ 5,95, no turismo ou cartão até cerca de R$ 6,18.")
+        self.assertEqual(limpar_para_fala("Foi em 05/03/2019.")[0], "Foi em 5 de março de 2019.")
+        self.assertIn("km/h", limpar_para_fala("A 80 km/h.")[0])  # unidade não vira "ou"
+
+    def test_frase_longa_sai_em_partes(self):
+        # frase real de 190 letras que levou 1,4 s para sintetizar inteira
+        frase = ("Inflação é a alta geral e contínua dos preços de bens e serviços numa economia, o que faz o poder de "
+                 "compra do dinheiro cair — ou seja, o mesmo valor compra menos coisas com o tempo.")
+        partes = alimentar_aos_poucos(DivisorFala(), frase)
+        self.assertGreater(len(partes), 1)
+        self.assertTrue(all(len(p) <= 110 for p in partes), partes)
+        self.assertTrue(partes[0].startswith("Inflação é a alta geral"))
+        self.assertEqual(" ".join(partes).replace(" ,", ",").count("Inflação"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
